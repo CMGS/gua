@@ -1,13 +1,9 @@
 package auth
 
 import (
-	"strings"
-
 	"github.com/CMGS/gua/libwechat/types"
 	"github.com/CMGS/gua/utils"
 )
-
-var accountIDReplacer = strings.NewReplacer("@", "-", ".", "-", ":", "-")
 
 // SaveCredentials marshals credentials to JSON and writes them to path
 // with 0600 permissions. Parent directories are created as needed.
@@ -21,6 +17,7 @@ func LoadCredentials(path string) (*types.Credentials, error) {
 }
 
 // NormalizeAccountID replaces @, ., and : with - for filesystem safety.
+// Delegates to utils.NormalizeID.
 func NormalizeAccountID(raw string) string {
-	return accountIDReplacer.Replace(raw)
+	return utils.NormalizeID(raw)
 }

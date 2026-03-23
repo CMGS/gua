@@ -11,6 +11,7 @@ import (
 	"github.com/CMGS/gua/backend"
 	"github.com/CMGS/gua/libwechat"
 	"github.com/CMGS/gua/libwechat/types"
+	"github.com/CMGS/gua/utils"
 )
 
 // DownloadMessageMedia downloads all media from a WeChat message to /tmp.
@@ -29,7 +30,7 @@ func DownloadMessageMedia(ctx context.Context, bot *libwechat.Bot, msg *types.We
 				logger.Warnf(ctx, "download image: %v", err)
 				continue
 			}
-			if mf, err := saveMedia(data, detectImageFormat(data), backend.MediaTypeImage, ""); err != nil {
+			if mf, err := saveMedia(data, utils.DetectImageFormat(data), backend.MediaTypeImage, ""); err != nil {
 				logger.Warnf(ctx, "save image: %v", err)
 			} else {
 				files = append(files, mf)
@@ -83,15 +84,4 @@ func saveMedia(data []byte, ext string, mediaType backend.MediaType, fileName st
 		return backend.MediaFile{}, fmt.Errorf("write %s: %w", path, err)
 	}
 	return backend.MediaFile{Path: path, Type: mediaType, FileName: fileName}, nil
-}
-
-// detectImageFormat checks magic bytes to determine image format.
-func detectImageFormat(data []byte) string {
-	if len(data) >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
-		return "png"
-	}
-	if len(data) >= 3 && data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 {
-		return "gif"
-	}
-	return "jpg"
 }
