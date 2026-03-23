@@ -1,0 +1,34 @@
+# Bot (separate repo)
+bot
+
+# Build artifacts
+bin/
+dist/
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Test
+*.test
+*.out
+coverage.txt
+coverage.html
+coverage/
+
+# Local dev
+tmp/
+.cache/
+.tmp/
