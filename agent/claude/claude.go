@@ -18,7 +18,7 @@ import (
 	"github.com/projecteru2/core/log"
 
 	"github.com/CMGS/gua/agent"
-	"github.com/CMGS/gua/libwechat/auth"
+	"github.com/CMGS/gua/utils"
 	"github.com/CMGS/gua/protocol"
 )
 
@@ -378,7 +378,7 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	c.mu.Unlock()
 
 	// Prepare workdir and files outside the lock.
-	normalized := auth.NormalizeAccountID(userID)
+	normalized := utils.NormalizeID(userID)
 	workDir := filepath.Join(c.baseWorkDir, "sessions", normalized)
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create workdir: %w", err)

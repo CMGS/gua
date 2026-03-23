@@ -1,19 +1,24 @@
 package config
 
-import _ "embed"
+import "embed"
 
-//go:embed base.md
-var BaseMD string
-
-//go:embed wechat.md
-var WechatMD string
+//go:embed *.md
+var mdFS embed.FS
 
 // MergedMD returns the combined CLAUDE.md content for the given backend.
+// Loads base.md + {backendName}.md if it exists.
 func MergedMD(backendName string) string {
-	md := BaseMD
-	switch backendName {
-	case "wechat":
-		md += "\n\n" + WechatMD
+	md := readMD("base.md")
+	if overlay := readMD(backendName + ".md"); overlay != "" {
+		md += "\n\n" + overlay
 	}
 	return md
+}
+
+func readMD(name string) string {
+	data, err := mdFS.ReadFile(name)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

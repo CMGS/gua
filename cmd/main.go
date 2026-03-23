@@ -13,6 +13,7 @@ import (
 	coretypes "github.com/projecteru2/core/types"
 
 	"github.com/CMGS/gua/agent/claude"
+	"github.com/CMGS/gua/backend"
 	"github.com/CMGS/gua/backend/wechat"
 	"github.com/CMGS/gua/config"
 	"github.com/CMGS/gua/libwechat/auth"
@@ -127,7 +128,7 @@ func cmdStart(ctx context.Context, args []string) {
 		os.Exit(1)
 	}
 
-	var b *wechat.WeChat
+	var b backend.Backend
 	switch *backendName {
 	case "wechat":
 		b = wechat.New(creds)

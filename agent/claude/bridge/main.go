@@ -17,11 +17,10 @@ import (
 	"github.com/CMGS/gua/protocol"
 )
 
-const instructions = `Messages from WeChat arrive as <channel source="gua" sender="..." sender_id="...">.
+const defaultInstructions = `Messages arrive as <channel source="gua" sender="..." sender_id="...">.
 Media files are downloaded locally; paths appear as [图片: /path] or [文件: /path] in the content.
 Reply with the gua_reply tool, passing sender_id from the tag.
 For file responses, set file_path to the absolute path of a real local file, never a directory.
-WeChat does not render Markdown — use plain text only.
 Respond in the same language as the user.`
 
 var guaReplySchema = map[string]any{
@@ -48,6 +47,7 @@ func main() {
 
 	socketPath := flag.String("socket", "", "path to dispatcher Unix socket")
 	userID := flag.String("user", "", "user ID for this bridge session")
+	instrText := flag.String("instructions", "", "MCP channel instructions (overrides default)")
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
@@ -58,13 +58,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := run(ctx, *socketPath, *userID); err != nil {
+	instr := defaultInstructions
+	if *instrText != "" {
+		instr = *instrText
+	}
+
+	if err := run(ctx, *socketPath, *userID, instr); err != nil {
 		logger.Errorf(ctx, err, "%s", "bridge exited")
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, socketPath, userID string) error {
+func run(ctx context.Context, socketPath, userID, instructions string) error {
 	logger := log.WithFunc("bridge.run")
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -90,7 +95,7 @@ func run(ctx context.Context, socketPath, userID string) error {
 		mcpserver.WithTools([]mcpserver.Tool{
 			{
 				Name:        "gua_reply",
-				Description: "Reply to a WeChat user. Pass sender_id from the channel event.",
+				Description: "Send a reply to the user. Pass sender_id from the channel event.",
 				InputSchema: guaReplySchema,
 			},
 		}),

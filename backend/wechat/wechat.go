@@ -3,7 +3,6 @@ package wechat
 import (
 	"context"
 	"fmt"
-	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/CMGS/gua/libwechat/parse"
 	"github.com/CMGS/gua/libwechat/types"
 	"github.com/CMGS/gua/libwechat/voice"
+	"github.com/CMGS/gua/utils"
 )
 
 // WeChat implements backend.Backend for the WeChat iLink platform.
@@ -113,9 +113,9 @@ func (w *WeChat) Send(ctx context.Context, msg backend.OutboundMessage) error {
 	logger := log.WithFunc("wechat.Send")
 
 	if msg.FilePath != "" {
-		mimeType := detectMIMEType(msg.FilePath)
+		mimeType := utils.DetectMIMEType(msg.FilePath)
 		// Only raster images are supported by WeChat CDN; SVG, WebP etc. go as file attachments.
-		isRaster := mimeType == "image/png" || mimeType == "image/jpeg" || mimeType == "image/gif" || mimeType == "image/bmp"
+		isRaster := utils.IsRasterImage(mimeType)
 		switch {
 		case isRaster:
 			if err := w.bot.SendImageFile(ctx, msg.RecipientID, msg.FilePath, msg.ReplyToken); err != nil {
@@ -128,7 +128,7 @@ func (w *WeChat) Send(ctx context.Context, msg backend.OutboundMessage) error {
 				return err
 			}
 		default:
-			fileName := cleanFileName(filepath.Base(msg.FilePath))
+			fileName := utils.CleanFileName(filepath.Base(msg.FilePath))
 			if err := w.bot.SendFile(ctx, msg.RecipientID, msg.FilePath, fileName, msg.ReplyToken); err != nil {
 				logger.Warnf(ctx, "send file to %s: %v", msg.RecipientID, err)
 				return err
@@ -157,40 +157,4 @@ func (w *WeChat) StartTyping(ctx context.Context, userID, replyToken string) (st
 // Creds returns the stored credentials (for persistence by caller).
 func (w *WeChat) Creds() *types.Credentials {
 	return w.creds
-}
-
-// cleanFileName strips the "gua-{uuid}." prefix from temp file names.
-// e.g. "gua-7f4b68bd.svg" → "image.svg", "gua-7f4b68bd-report.pdf" → "report.pdf"
-func cleanFileName(name string) string {
-	// gua-{8hex}.ext or gua-{8hex}-originalname
-	if !strings.HasPrefix(name, "gua-") {
-		return name
-	}
-	rest := name[4:] // strip "gua-"
-	if len(rest) < 8 {
-		return name
-	}
-	after := rest[8:] // strip uuid part
-	ext := filepath.Ext(name)
-	switch {
-	case strings.HasPrefix(after, "-") && len(after) > 1:
-		return after[1:] // "gua-7f4b68bd-report.pdf" → "report.pdf"
-	case strings.HasPrefix(after, ".") && len(after) > 1:
-		return "file" + ext // "gua-7f4b68bd.svg" → "file.svg"
-	default:
-		return name
-	}
-}
-
-// detectMIMEType detects the MIME type from the file extension.
-func detectMIMEType(path string) string {
-	ext := filepath.Ext(path)
-	if ext == "" {
-		return "application/octet-stream"
-	}
-	mimeType := mime.TypeByExtension(ext)
-	if mimeType == "" {
-		return "application/octet-stream"
-	}
-	return mimeType
 }
