@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 
 	"github.com/projecteru2/core/log"
+	coretypes "github.com/projecteru2/core/types"
 
 	"github.com/CMGS/gua/agent/claude"
 	"github.com/CMGS/gua/backend/wechat"
@@ -25,23 +27,43 @@ const (
 )
 
 func main() {
-	logger := log.WithFunc("main")
-	ctx := context.Background()
+	initLogging()
 
 	if len(os.Args) < 2 {
-		logger.Errorf(ctx, nil, "Usage: gua <command>\n\nCommands:\n  setup    Setup backend authentication\n  start    Start the server")
+		printUsage(os.Stderr)
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
+	case "-h", "--help", "help":
+		printUsage(os.Stdout)
 	case "setup":
 		cmdSetup(os.Args[2:])
 	case "start":
 		cmdStart(os.Args[2:])
 	default:
-		logger.Errorf(ctx, nil, "unknown command: %s", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
+		printUsage(os.Stderr)
 		os.Exit(1)
 	}
+}
+
+func initLogging() {
+	if err := log.SetupLog(context.Background(), &coretypes.ServerLogConfig{
+		Level:   "info",
+		UseJSON: false,
+	}, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "init log: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func printUsage(w *os.File) {
+	fmt.Fprintln(w, "Usage: gua <command>")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  setup    Setup backend authentication")
+	fmt.Fprintln(w, "  start    Start the server")
 }
 
 func cmdSetup(args []string) {
@@ -58,17 +80,17 @@ func cmdSetup(args []string) {
 	case "wechat":
 		w := wechat.New(nil)
 		if err := w.Setup(ctx); err != nil {
-			logger.Errorf(ctx, err, "setup failed")
+			logger.Errorf(ctx, err, "%s", "setup failed")
 			os.Exit(1)
 		}
 		credPath := credsPath("wechat")
 		if err := auth.SaveCredentials(credPath, w.Creds()); err != nil {
-			logger.Errorf(ctx, err, "save credentials")
+			logger.Errorf(ctx, err, "%s", "save credentials")
 			os.Exit(1)
 		}
 		logger.Infof(ctx, "credentials saved to %s", credPath)
 	default:
-		logger.Errorf(ctx, nil, "unknown backend: %s", *backendName)
+		fmt.Fprintf(os.Stderr, "unknown backend: %s\n", *backendName)
 		os.Exit(1)
 	}
 }
@@ -89,11 +111,11 @@ func cmdStart(args []string) {
 	defer cancel()
 
 	if *workDir == "" {
-		logger.Errorf(ctx, nil, "--work-dir is required")
+		fmt.Fprintln(os.Stderr, "--work-dir is required")
 		os.Exit(1)
 	}
 	if *bridgeBin == "" {
-		logger.Errorf(ctx, nil, "--bridge-bin is required")
+		fmt.Fprintln(os.Stderr, "--bridge-bin is required")
 		os.Exit(1)
 	}
 
@@ -109,7 +131,7 @@ func cmdStart(args []string) {
 	case "wechat":
 		b = wechat.New(creds)
 	default:
-		logger.Errorf(ctx, nil, "unknown backend: %s", *backendName)
+		fmt.Fprintf(os.Stderr, "unknown backend: %s\n", *backendName)
 		os.Exit(1)
 	}
 
@@ -125,7 +147,7 @@ func cmdStart(args []string) {
 			claude.WithClaudeMD(claudeMD),
 		)
 		if err != nil {
-			logger.Errorf(ctx, err, "create agent")
+			logger.Errorf(ctx, err, "%s", "create agent")
 			os.Exit(1)
 		}
 
@@ -135,7 +157,7 @@ func cmdStart(args []string) {
 			logger.Warnf(ctx, "server exited: %v", err)
 		}
 	default:
-		logger.Errorf(ctx, nil, "unknown agent: %s", *agentName)
+		fmt.Fprintf(os.Stderr, "unknown agent: %s\n", *agentName)
 		os.Exit(1)
 	}
 }

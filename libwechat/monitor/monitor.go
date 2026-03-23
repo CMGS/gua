@@ -102,7 +102,7 @@ func (m *Monitor) Run(ctx context.Context) error {
 		backoff = initialBackoff
 
 		if resp.ErrCode == errCodeExpired {
-			logger.Warnf(ctx, "session expired (errcode -14), triggering guard")
+			logger.Warnf(ctx, "%s", "session expired (errcode -14), triggering guard")
 			if m.guard != nil {
 				m.guard.Trigger()
 			}
