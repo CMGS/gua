@@ -8,7 +8,7 @@ import (
 
 // Message is sent to the agent for processing.
 type Message struct {
-	Text       string             // formatted text (includes media path annotations)
+	Text       string              // formatted text (includes media path annotations)
 	MediaFiles []backend.MediaFile // attached media files (local paths)
 }
 
@@ -25,6 +25,9 @@ type Agent interface {
 	// Chat sends a message to the user's session and returns the reply.
 	// The agent manages per-user sessions internally.
 	Chat(ctx context.Context, userID string, msg Message) (*Response, error)
+	// Control handles out-of-band user confirmations such as /yes or /no.
+	// Returns handled=false when the input should fall back to normal chat.
+	Control(ctx context.Context, userID, input string) (resp *Response, handled bool, err error)
 	// Close terminates a user's session.
 	Close(userID string) error
 	// CloseAll terminates all sessions.

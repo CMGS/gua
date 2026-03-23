@@ -50,4 +50,8 @@ type Backend interface {
 	Start(ctx context.Context, handler InboundHandler) error
 	// Send sends a message to a user on the platform.
 	Send(ctx context.Context, msg OutboundMessage) error
+	// StartTyping shows a typing indicator to the user.
+	// Returns a stop function that cancels the indicator.
+	// Backends that don't support typing may return a no-op stop.
+	StartTyping(ctx context.Context, userID, replyToken string) (stop func())
 }

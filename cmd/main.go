@@ -51,7 +51,7 @@ func main() {
 
 func initLogging(ctx context.Context) {
 	if err := log.SetupLog(ctx, &coretypes.ServerLogConfig{
-		Level:   "info",
+		Level:   "debug",
 		UseJSON: false,
 	}, ""); err != nil {
 		fmt.Fprintf(os.Stderr, "init log: %v\n", err)
