@@ -27,10 +27,13 @@ const (
 	defaultBridgeBin = "gua-bridge"
 	defaultTmuxName  = "gua"
 
-	bridgeConnTimeout = 30 * time.Second
-	replyTimeout      = 300 * time.Second
+	bridgeConnTimeout  = 30 * time.Second
+	replyTimeout       = 300 * time.Second
+	controlWaitTimeout = 15 * time.Second
+	promptPollInterval = 2 * time.Second
 
 	behaviorAllow = "allow"
+	behaviorDeny  = "deny"
 )
 
 // Option configures a ClaudeCode agent.
@@ -123,44 +126,115 @@ func WithClaudeMD(content string) Option {
 func (c *ClaudeCode) Name() string { return "claude" }
 
 // Chat sends a message to the user's Claude Code session and waits for a reply.
+// On first call for a user, the session is created and all startup prompts are
+// auto-confirmed. The message is sent only after the bridge is fully connected.
 func (c *ClaudeCode) Chat(ctx context.Context, userID string, msg agent.Message) (*agent.Response, error) {
-	logger := log.WithFunc("claude.Chat")
-
 	sess, err := c.getOrCreateSession(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
 
+	if perm := sess.getPendingPermission(); perm != nil {
+		return &agent.Response{Text: formatPermissionPrompt(perm)}, nil
+	}
+
+	if err := c.sendChannelEvent(sess, userID, msg); err != nil {
+		return nil, fmt.Errorf("send channel event: %w", err)
+	}
+
+	return c.waitForReply(ctx, sess)
+}
+
+// Control handles out-of-band user confirmations such as /yes or /no.
+func (c *ClaudeCode) Control(ctx context.Context, userID, input string) (*agent.Response, bool, error) {
+	c.mu.RLock()
+	sess, ok := c.sessions[userID]
+	c.mu.RUnlock()
+	if !ok {
+		return nil, false, nil
+	}
+
+	if perm := sess.getPendingPermission(); perm != nil {
+		resp, err := c.handlePermissionControl(ctx, sess, input, perm)
+		return resp, true, err
+	}
+
+	if sess.getWriter() == nil || sess.getPendingTmuxPrompt() != "" {
+		resp, err := c.handleTmuxControl(ctx, sess, input)
+		return resp, true, err
+	}
+
+	return nil, false, nil
+}
+
+func (c *ClaudeCode) sendChannelEvent(sess *userSession, userID string, msg agent.Message) error {
+	logger := log.WithFunc("claude.sendChannelEvent")
 	evt := protocol.ChannelEvent{
 		Content: msg.Text,
 		Meta:    map[string]string{"sender_id": userID},
 	}
-	if err := protocol.WriteEnvelope(sess.writer, protocol.TypeChannelEvent, evt); err != nil {
-		return nil, fmt.Errorf("send channel event: %w", err)
+	if err := sess.writeEnvelope(protocol.TypeChannelEvent, evt); err != nil {
+		return err
 	}
+	logger.Debugf(c.ctx, "sent channel event to user=%s, text=%d bytes", userID, len(msg.Text))
+	return nil
+}
 
-	timer := time.NewTimer(replyTimeout)
+func (c *ClaudeCode) waitForReply(ctx context.Context, sess *userSession) (*agent.Response, error) {
+	return c.waitForReplyWithTimeout(ctx, sess, replyTimeout, true)
+}
+
+func (c *ClaudeCode) waitForReplyWithTimeout(ctx context.Context, sess *userSession, timeout time.Duration, timeoutIsError bool) (*agent.Response, error) {
+	logger := log.WithFunc("claude.waitForReply")
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	ticker := time.NewTicker(promptPollInterval)
+	defer ticker.Stop()
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case env := <-sess.replyCh:
-		if env == nil {
-			return nil, fmt.Errorf("session closed")
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case env := <-sess.replyCh:
+			if env == nil {
+				return nil, fmt.Errorf("session closed")
+			}
+			tc, err := protocol.DecodePayload[protocol.ToolCall](env)
+			if err != nil {
+				logger.Warnf(ctx, "decode tool call: %v", err)
+				return nil, fmt.Errorf("decode reply: %w", err)
+			}
+			resp := &agent.Response{Text: tc.Text}
+			if tc.FilePath != "" {
+				resp.Files = []string{tc.FilePath}
+			}
+			return resp, nil
+		case perm := <-sess.permCh:
+			if perm == nil {
+				return nil, fmt.Errorf("session closed")
+			}
+			return &agent.Response{Text: formatPermissionPrompt(perm)}, nil
+		case <-ticker.C:
+			prompt, err := c.captureInteractivePrompt(ctx, sess.paneID)
+			if err != nil {
+				logger.Debugf(ctx, "capture interactive prompt for user=%s: %v", sess.userID, err)
+				continue
+			}
+			if prompt != "" {
+				sess.setPendingTmuxPrompt(prompt)
+				return &agent.Response{Text: c.formatTmuxPrompt(prompt)}, nil
+			}
+		case <-timer.C:
+			prompt, err := c.captureInteractivePrompt(ctx, sess.paneID)
+			if err == nil && prompt != "" {
+				sess.setPendingTmuxPrompt(prompt)
+				return &agent.Response{Text: c.formatTmuxPrompt(prompt)}, nil
+			}
+			if timeoutIsError {
+				return nil, fmt.Errorf("reply timeout after %s", timeout)
+			}
+			return &agent.Response{Text: "已发送选择，Claude 仍在处理中。"}, nil
 		}
-		tc, err := protocol.DecodePayload[protocol.ToolCall](env)
-		if err != nil {
-			logger.Warnf(ctx, "decode tool call: %v", err)
-			return nil, fmt.Errorf("decode reply: %w", err)
-		}
-		resp := &agent.Response{Text: tc.Text}
-		if tc.FilePath != "" {
-			resp.Files = []string{tc.FilePath}
-		}
-		return resp, nil
-	case <-timer.C:
-		return nil, fmt.Errorf("reply timeout after %s", replyTimeout)
 	}
 }
 
@@ -209,11 +283,16 @@ type userSession struct {
 	paneID   string
 	conn     net.Conn
 	reader   *bufio.Reader
-	writer   io.Writer
 	replyCh  chan *protocol.Envelope
+	permCh   chan *protocol.Permission
 	cancel   context.CancelFunc
 
 	connReady chan struct{} // closed when bridge connects
+
+	stateMu           sync.Mutex
+	writer            io.Writer // guarded by stateMu for concurrent safety
+	pendingPermission *protocol.Permission
+	pendingTmuxPrompt string
 }
 
 func (s *userSession) close() error {
@@ -224,6 +303,57 @@ func (s *userSession) close() error {
 		s.conn.Close()
 	}
 	return nil
+}
+
+func (s *userSession) setPendingPermission(perm *protocol.Permission) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.pendingPermission = perm
+}
+
+func (s *userSession) getPendingPermission() *protocol.Permission {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.pendingPermission
+}
+
+func (s *userSession) clearPendingPermission() {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.pendingPermission = nil
+}
+
+func (s *userSession) getWriter() io.Writer {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.writer
+}
+
+func (s *userSession) writeEnvelope(typ string, payload any) error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.writer == nil {
+		return fmt.Errorf("session not connected")
+	}
+	return protocol.WriteEnvelope(s.writer, typ, payload)
+}
+
+func (s *userSession) setPendingTmuxPrompt(prompt string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.pendingTmuxPrompt = prompt
+}
+
+func (s *userSession) getPendingTmuxPrompt() string {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.pendingTmuxPrompt
+}
+
+func (s *userSession) clearPendingTmuxPrompt() {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.pendingTmuxPrompt = ""
 }
 
 func (c *ClaudeCode) getOrCreateSession(ctx context.Context, userID string) (*userSession, error) {
@@ -280,6 +410,7 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 		userID:    userID,
 		workDir:   workDir,
 		replyCh:   make(chan *protocol.Envelope, 64),
+		permCh:    make(chan *protocol.Permission, 8),
 		cancel:    cancel,
 		connReady: make(chan struct{}),
 	}
@@ -306,21 +437,34 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 
 	logger.Infof(c.ctx, "spawned claude tmux_session=%s window=%s pane=%s user=%s workdir=%s", c.tmuxName, windowID, paneID, userID, workDir)
 
-	select {
-	case <-sess.connReady:
-	case <-time.After(bridgeConnTimeout):
-		pane, _ := c.capturePane(context.Background(), paneID)
-		c.Close(userID) //nolint:errcheck
-		if pane != "" {
-			return nil, fmt.Errorf("bridge connection timeout for user %s\npane output:\n%s", userID, pane)
-		}
-		return nil, fmt.Errorf("bridge connection timeout for user %s", userID)
-	case <-sessCtx.Done():
-		c.Close(userID) //nolint:errcheck
-		return nil, fmt.Errorf("session cancelled while waiting for bridge: %w", sessCtx.Err())
-	}
+	// Auto-confirm any interactive prompts that appear before the bridge connects
+	// (e.g. --dangerously-load-development-channels confirmation, project trust).
+	// The user should not see these — they are internal to the setup flow.
+	ticker := time.NewTicker(promptPollInterval)
+	defer ticker.Stop()
+	timeout := time.NewTimer(bridgeConnTimeout)
+	defer timeout.Stop()
 
-	return sess, nil
+	for {
+		select {
+		case <-sess.connReady:
+			// Brief pause to let Claude finish initializing after bridge handshake.
+			time.Sleep(500 * time.Millisecond)
+			return sess, nil
+		case <-ticker.C:
+			c.autoConfirmPrompt(paneID)
+		case <-timeout.C:
+			logger.Warnf(c.ctx, "bridge connection timeout for user=%s, last pane capture follows", userID)
+			if pane, err := c.capturePane(c.ctx, paneID); err == nil {
+				logger.Warnf(c.ctx, "pane output:\n%s", pane)
+			}
+			c.Close(userID) //nolint:errcheck
+			return nil, fmt.Errorf("bridge connection timeout for user %s", userID)
+		case <-sessCtx.Done():
+			c.Close(userID) //nolint:errcheck
+			return nil, fmt.Errorf("session cancelled while waiting for bridge: %w", sessCtx.Err())
+		}
+	}
 }
 
 func (c *ClaudeCode) startTmuxSession(ctx context.Context, workDir, windowName string) (string, string, error) {
@@ -352,6 +496,12 @@ func (c *ClaudeCode) tmuxClaudeCommand() string {
 	if c.model != "" {
 		args = append(args, shellQuote("--model"), shellQuote(c.model))
 	}
+	// Resume the previous conversation if one exists in this workdir.
+	args = append(args, shellQuote("--continue"))
+	// Pre-approve common tools to reduce permission prompts.
+	for _, tool := range []string{"Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "mcp__gua__gua_reply"} {
+		args = append(args, shellQuote("--allowedTools"), shellQuote(tool))
+	}
 	args = append(args, shellQuote("--dangerously-load-development-channels"), shellQuote("server:gua"))
 
 	claudeCmd := strings.Join(args, " ")
@@ -375,6 +525,66 @@ func (c *ClaudeCode) capturePane(ctx context.Context, paneID string) (string, er
 	return c.tmux(ctx, "capture-pane", "-p", "-t", paneID, "-S", "-80")
 }
 
+func (c *ClaudeCode) captureInteractivePrompt(ctx context.Context, paneID string) (string, error) {
+	pane, err := c.capturePane(ctx, paneID)
+	if err != nil {
+		return "", err
+	}
+	return compactInteractivePrompt(pane), nil
+}
+
+// autoConfirmPrompt checks the tmux pane for interactive prompts and
+// automatically confirms them by sending Enter. This is used during session
+// startup to skip prompts like the development-channel warning or project trust.
+func (c *ClaudeCode) autoConfirmPrompt(paneID string) {
+	logger := log.WithFunc("claude.autoConfirmPrompt")
+	prompt, err := c.captureInteractivePrompt(c.ctx, paneID)
+	if err != nil || prompt == "" {
+		return
+	}
+	logger.Debugf(c.ctx, "auto-confirming prompt: %s", prompt)
+	c.sendTmuxKeys(c.ctx, paneID, "Enter") //nolint:errcheck
+}
+
+func (c *ClaudeCode) sendTmuxKeys(ctx context.Context, paneID string, keys ...string) error {
+	args := append([]string{"send-keys", "-t", paneID}, keys...)
+	_, err := c.tmux(ctx, args...)
+	return err
+}
+
+func (c *ClaudeCode) handleTmuxControl(ctx context.Context, sess *userSession, input string) (*agent.Response, error) {
+	keyset, ok := tmuxControlKeys(sess.getPendingTmuxPrompt(), input)
+	if !ok {
+		return &agent.Response{Text: c.formatTmuxPrompt(sess.getPendingTmuxPrompt())}, nil
+	}
+	if err := c.sendTmuxKeys(ctx, sess.paneID, keyset...); err != nil {
+		return nil, err
+	}
+	sess.clearPendingTmuxPrompt()
+
+	return c.waitForReplyWithTimeout(ctx, sess, controlWaitTimeout, false)
+}
+
+func (c *ClaudeCode) handlePermissionControl(ctx context.Context, sess *userSession, input string, perm *protocol.Permission) (*agent.Response, error) {
+	behavior, ok := permissionBehavior(input)
+	if !ok {
+		return &agent.Response{Text: formatPermissionPrompt(perm)}, nil
+	}
+	reply := protocol.Permission{
+		RequestID: perm.RequestID,
+		Behavior:  behavior,
+	}
+	if err := sess.writeEnvelope(protocol.TypePermissionReply, reply); err != nil {
+		return nil, fmt.Errorf("send permission reply: %w", err)
+	}
+	sess.clearPendingPermission()
+
+	if behavior != behaviorAllow {
+		return &agent.Response{Text: "已拒绝该操作。"}, nil
+	}
+	return c.waitForReply(ctx, sess)
+}
+
 func (c *ClaudeCode) killTmuxWindow(ctx context.Context, windowID string) error {
 	if windowID == "" {
 		return nil
@@ -396,6 +606,208 @@ func shellQuote(s string) string {
 		return "''"
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func tmuxControlKeys(prompt, input string) ([]string, bool) {
+	cmd := normalizeControl(input)
+	lower := strings.ToLower(prompt)
+	hasYN := strings.Contains(lower, "y/n")
+
+	switch cmd {
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		return []string{cmd, "Enter"}, true
+	case "yes", "y", "enter":
+		if hasYN {
+			return []string{"y", "Enter"}, true
+		}
+		return []string{"Enter"}, true
+	case "no", "n", "cancel":
+		if strings.Contains(prompt, "Esc to cancel") {
+			return []string{"Escape"}, true
+		}
+		if hasYN {
+			return []string{"n", "Enter"}, true
+		}
+		return []string{"C-c"}, true
+	default:
+		return nil, false
+	}
+}
+
+func permissionBehavior(input string) (string, bool) {
+	switch normalizeControl(input) {
+	case "yes", "y", "allow", "ok":
+		return behaviorAllow, true
+	case "no", "n", "deny", "cancel":
+		return behaviorDeny, true
+	default:
+		return "", false
+	}
+}
+
+func normalizeControl(input string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(input)), "/")
+}
+
+func formatPermissionPrompt(perm *protocol.Permission) string {
+	if perm == nil {
+		return "Claude 正在等待确认。回复 /yes 或 /no。"
+	}
+
+	// Prefer the real tmux terminal content which shows numbered options.
+	if perm.TmuxPrompt != "" {
+		options := promptOptionHints(perm.TmuxPrompt)
+		if options == "" {
+			options = "/yes"
+		}
+		return fmt.Sprintf("Claude 需要确认:\n\n%s\n\n回复 %s 选择，/yes 允许，/no 拒绝。", perm.TmuxPrompt, options)
+	}
+
+	// Fallback: MCP permission fields only.
+	var b strings.Builder
+	fmt.Fprintf(&b, "Claude 需要确认 %s", perm.ToolName)
+	if perm.Description != "" {
+		fmt.Fprintf(&b, ": %s", perm.Description)
+	}
+	b.WriteString("\n回复 /yes 允许，或 /no 拒绝。")
+	return b.String()
+}
+
+func (c *ClaudeCode) formatTmuxPrompt(prompt string) string {
+	text := compactInteractivePrompt(prompt)
+	if text == "" {
+		text = "Claude 终端正在等待你的确认。"
+	}
+	options := promptOptionHints(text)
+	if options == "" {
+		options = "/yes"
+	}
+	return fmt.Sprintf("Claude 终端正在等待输入：\n\n%s\n\n回复 %s 选择，/yes 确认当前选项，/no 取消。", text, options)
+}
+
+func compactInteractivePrompt(pane string) string {
+	pane = strings.ReplaceAll(pane, "\u00a0", " ")
+	lines := strings.Split(pane, "\n")
+	filtered := make([]string, 0, len(lines))
+	interactive := false
+
+	for _, raw := range lines {
+		line, keep, isInteractive := normalizePromptLine(raw)
+		if isInteractive {
+			interactive = true
+		}
+		if keep {
+			filtered = append(filtered, line)
+		}
+	}
+
+	if !interactive || len(filtered) == 0 {
+		return ""
+	}
+
+	start := 0
+	if len(filtered) > 8 {
+		start = len(filtered) - 8
+	}
+
+	var compact []string
+	for _, line := range filtered[start:] {
+		if len(compact) > 0 && compact[len(compact)-1] == line {
+			continue
+		}
+		compact = append(compact, line)
+	}
+
+	return strings.TrimSpace(strings.Join(compact, "\n"))
+}
+
+func normalizePromptLine(raw string) (line string, keep bool, interactive bool) {
+	line = strings.TrimSpace(strings.TrimRight(raw, "\r"))
+	if line == "" {
+		return "", false, false
+	}
+
+	switch {
+	case isSeparatorLine(line):
+		return "", false, false
+	case strings.Contains(line, "Enter to confirm"),
+		strings.Contains(line, "Esc to cancel"),
+		strings.Contains(strings.ToLower(line), "[y/n]"),
+		strings.Contains(strings.ToLower(line), "y/n"):
+		return line, true, true
+	case strings.Contains(line, "Claude Code v"),
+		strings.Contains(line, "Listening for channel messages from:"),
+		strings.Contains(line, "Experimental · inbound messages"),
+		strings.HasPrefix(line, "/private/tmp/"),
+		strings.HasPrefix(line, "/tmp/"),
+		strings.HasPrefix(line, "← "),
+		strings.HasPrefix(line, "● "):
+		return "", false, false
+	case strings.HasPrefix(line, "❯ "):
+		trimmed := strings.TrimSpace(strings.TrimPrefix(line, "❯ "))
+		if trimmed == "" {
+			return "", false, false
+		}
+		line = trimmed
+	}
+
+	line = strings.TrimLeft(line, "⎿│└├┌─> ")
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "/") {
+		return "", false, false
+	}
+
+	if idx := optionLineNumber(line); idx != "" {
+		return line, true, true
+	}
+
+	return line, true, false
+}
+
+func promptOptionHints(prompt string) string {
+	seen := map[string]struct{}{}
+	var hints []string
+
+	for _, raw := range strings.Split(prompt, "\n") {
+		if n := optionLineNumber(strings.TrimSpace(raw)); n != "" {
+			cmd := "/" + n
+			if _, ok := seen[cmd]; ok {
+				continue
+			}
+			seen[cmd] = struct{}{}
+			hints = append(hints, cmd)
+		}
+	}
+
+	return strings.Join(hints, " ")
+}
+
+func optionLineNumber(line string) string {
+	line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "❯"))
+	if line == "" {
+		return ""
+	}
+	dot := strings.IndexByte(line, '.')
+	if dot <= 0 {
+		return ""
+	}
+	for _, r := range line[:dot] {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	if dot+1 >= len(line) || line[dot+1] != ' ' {
+		return ""
+	}
+	return line[:dot]
+}
+
+func isSeparatorLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	return strings.Trim(line, "─-═━") == ""
 }
 
 func (c *ClaudeCode) acceptLoop() {
@@ -445,10 +857,17 @@ func (c *ClaudeCode) handleBridgeConn(conn net.Conn) {
 	}
 	sess.conn = conn
 	sess.reader = reader
+	sess.stateMu.Lock()
 	sess.writer = conn
+	sess.pendingTmuxPrompt = ""
+	sess.stateMu.Unlock()
 	c.mu.Unlock()
 
-	close(sess.connReady)
+	select {
+	case <-sess.connReady:
+	default:
+		close(sess.connReady)
+	}
 	logger.Infof(c.ctx, "bridge connected for user=%s", reg.UserID)
 
 	c.readBridgeLoop(sess)
@@ -486,16 +905,20 @@ func (c *ClaudeCode) readBridgeLoop(sess *userSession) {
 				logger.Warnf(c.ctx, "decode permission request: %v", err)
 				continue
 			}
-			reply := protocol.Permission{
-				RequestID: perm.RequestID,
-				Behavior:  behaviorAllow,
+			// Capture the actual tmux terminal prompt which has richer content
+			// (numbered options like "1. Yes  2. Yes, allow during session  3. No").
+			if pane, captureErr := c.capturePane(c.ctx, sess.paneID); captureErr == nil && pane != "" {
+				perm.TmuxPrompt = compactInteractivePrompt(pane)
 			}
-			if err := protocol.WriteEnvelope(sess.writer, protocol.TypePermissionReply, reply); err != nil {
-				logger.Warnf(c.ctx, "send permission reply: %v", err)
+			sess.setPendingPermission(perm)
+			select {
+			case sess.permCh <- perm:
+			default:
+				logger.Warnf(c.ctx, "permission channel full for user=%s, dropping notification", sess.userID)
 			}
 
 		default:
-			logger.Warnf(c.ctx, "unknown envelope from bridge: %s", env.Type)
+			logger.Debugf(c.ctx, "unknown envelope from bridge: %s", env.Type)
 		}
 	}
 }

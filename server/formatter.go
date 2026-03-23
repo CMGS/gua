@@ -48,6 +48,7 @@ func ExtractFiles(text string) (string, []string) {
 	}
 
 	seen := make(map[string]struct{}, len(matches))
+	valid := make(map[string]struct{}, len(matches))
 	var paths []string
 
 	for _, p := range matches {
@@ -55,14 +56,50 @@ func ExtractFiles(text string) (string, []string) {
 			continue
 		}
 		seen[p] = struct{}{}
-		if _, err := os.Stat(p); err == nil {
+		if isSendableFile(p) {
+			valid[p] = struct{}{}
 			paths = append(paths, p)
 		}
 	}
 
-	cleaned := filePathRegex.ReplaceAllString(text, "")
+	cleaned := filePathRegex.ReplaceAllStringFunc(text, func(match string) string {
+		if _, ok := valid[match]; ok {
+			return ""
+		}
+		return match
+	})
 	cleaned = blankLineRegex.ReplaceAllString(cleaned, "\n\n")
 	cleaned = strings.TrimSpace(cleaned)
 
 	return cleaned, paths
+}
+
+// MergeFiles validates and deduplicates file paths gathered from text extraction
+// and explicit tool outputs.
+func MergeFiles(paths ...[]string) []string {
+	seen := map[string]struct{}{}
+	var merged []string
+
+	for _, group := range paths {
+		for _, p := range group {
+			if p == "" || !isSendableFile(p) {
+				continue
+			}
+			if _, ok := seen[p]; ok {
+				continue
+			}
+			seen[p] = struct{}{}
+			merged = append(merged, p)
+		}
+	}
+
+	return merged
+}
+
+func isSendableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
 }

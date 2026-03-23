@@ -97,7 +97,7 @@ func (w *WeChat) Start(ctx context.Context, handler backend.InboundHandler) erro
 			return
 		}
 
-		logger.Warnf(ctx, "inbound from %s: text=%d bytes, media=%d files", msg.FromUserID, len(text), len(mediaFiles))
+		logger.Debugf(ctx, "inbound from %s: text=%d bytes, media=%d files", msg.FromUserID, len(text), len(mediaFiles))
 
 		handler(ctx, backend.InboundMessage{
 			SenderID:   msg.FromUserID,
@@ -114,8 +114,10 @@ func (w *WeChat) Send(ctx context.Context, msg backend.OutboundMessage) error {
 
 	if msg.FilePath != "" {
 		mimeType := detectMIMEType(msg.FilePath)
+		// Only raster images are supported by WeChat CDN; SVG, WebP etc. go as file attachments.
+		isRaster := mimeType == "image/png" || mimeType == "image/jpeg" || mimeType == "image/gif" || mimeType == "image/bmp"
 		switch {
-		case strings.HasPrefix(mimeType, "image/"):
+		case isRaster:
 			if err := w.bot.SendImageFile(ctx, msg.RecipientID, msg.FilePath, msg.ReplyToken); err != nil {
 				logger.Warnf(ctx, "send image to %s: %v", msg.RecipientID, err)
 				return err
@@ -126,7 +128,7 @@ func (w *WeChat) Send(ctx context.Context, msg backend.OutboundMessage) error {
 				return err
 			}
 		default:
-			fileName := filepath.Base(msg.FilePath)
+			fileName := cleanFileName(filepath.Base(msg.FilePath))
 			if err := w.bot.SendFile(ctx, msg.RecipientID, msg.FilePath, fileName, msg.ReplyToken); err != nil {
 				logger.Warnf(ctx, "send file to %s: %v", msg.RecipientID, err)
 				return err
@@ -144,13 +146,43 @@ func (w *WeChat) Send(ctx context.Context, msg backend.OutboundMessage) error {
 	return nil
 }
 
+// StartTyping shows a typing indicator. Returns a stop function with 5s keepalive.
+func (w *WeChat) StartTyping(ctx context.Context, userID, replyToken string) (stop func()) {
+	if w.bot == nil {
+		return func() {}
+	}
+	return w.bot.StartTyping(ctx, userID, replyToken)
+}
+
 // Creds returns the stored credentials (for persistence by caller).
 func (w *WeChat) Creds() *types.Credentials {
 	return w.creds
 }
 
+// cleanFileName strips the "gua-{uuid}." prefix from temp file names.
+// e.g. "gua-7f4b68bd.svg" → "image.svg", "gua-7f4b68bd-report.pdf" → "report.pdf"
+func cleanFileName(name string) string {
+	// gua-{8hex}.ext or gua-{8hex}-originalname
+	if !strings.HasPrefix(name, "gua-") {
+		return name
+	}
+	rest := name[4:] // strip "gua-"
+	if len(rest) < 8 {
+		return name
+	}
+	after := rest[8:] // strip uuid part
+	ext := filepath.Ext(name)
+	switch {
+	case strings.HasPrefix(after, "-") && len(after) > 1:
+		return after[1:] // "gua-7f4b68bd-report.pdf" → "report.pdf"
+	case strings.HasPrefix(after, ".") && len(after) > 1:
+		return "file" + ext // "gua-7f4b68bd.svg" → "file.svg"
+	default:
+		return name
+	}
+}
+
 // detectMIMEType detects the MIME type from the file extension.
-// Falls back to "application/octet-stream" if unknown.
 func detectMIMEType(path string) string {
 	ext := filepath.Ext(path)
 	if ext == "" {

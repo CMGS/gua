@@ -15,10 +15,15 @@ import (
 )
 
 const (
-	protocolVersion  = "2024-11-05"
-	headerPrefix     = "Content-Length: "
-	maxContentLength = 10 * 1024 * 1024 // 10MB
+	protocolVersion            = "2024-11-05"
+	headerPrefix               = "Content-Length: "
+	maxContentLength           = 10 * 1024 * 1024 // 10MB
+	frameModeUnknown frameMode = iota
+	frameModeLine
+	frameModeContentLength
 )
+
+type frameMode int
 
 // Tool describes an MCP tool exposed to Claude Code.
 type Tool struct {
@@ -38,15 +43,16 @@ type Option func(*Server)
 
 // Server is a lightweight MCP JSON-RPC 2.0 server over stdio.
 type Server struct {
-	name         string
-	version      string
-	instructions string
-	tools        []Tool
-	toolHandler  ToolHandler
+	name          string
+	version       string
+	instructions  string
+	tools         []Tool
+	toolHandler   ToolHandler
 	notifyHandler NotificationHandler
 
-	mu     sync.Mutex
-	writer *bufio.Writer
+	mu        sync.Mutex
+	writer    *bufio.Writer
+	frameMode frameMode
 }
 
 // New creates a new MCP server with the given name and version.
@@ -92,13 +98,14 @@ func (s *Server) Run(ctx context.Context) error {
 			return err
 		}
 
-		data, err := readFrame(reader)
+		data, mode, err := readFrame(reader)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return fmt.Errorf("read frame: %w", err)
 		}
+		s.setFrameMode(mode)
 
 		var req jsonrpcRequest
 		if err := json.Unmarshal(data, &req); err != nil {
@@ -158,7 +165,6 @@ type jsonrpcError struct {
 	Message string `json:"message"`
 }
 
-
 func (s *Server) handleRequest(ctx context.Context, req jsonrpcRequest) {
 	logger := log.WithFunc("mcpserver.handleRequest")
 
@@ -168,8 +174,16 @@ func (s *Server) handleRequest(ctx context.Context, req jsonrpcRequest) {
 	switch req.Method {
 	case "initialize":
 		result = s.handleInitialize()
+	case "ping":
+		result = map[string]any{}
 	case "tools/list":
 		result = s.handleToolsList()
+	case "resources/list":
+		result = map[string]any{"resources": []any{}}
+	case "resources/templates/list":
+		result = map[string]any{"resourceTemplates": []any{}}
+	case "prompts/list":
+		result = map[string]any{"prompts": []any{}}
 	case "tools/call":
 		r, err := s.handleToolsCall(ctx, req.Params)
 		if err != nil {
@@ -179,7 +193,7 @@ func (s *Server) handleRequest(ctx context.Context, req jsonrpcRequest) {
 			result = r
 		}
 	default:
-		logger.Warnf(ctx, "unknown method: %s", req.Method)
+		logger.Debugf(ctx, "unknown method: %s", req.Method)
 		rpcErr = jsonrpcError{Code: -32601, Message: "method not found: " + req.Method}
 	}
 
@@ -250,52 +264,62 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}, nil
 }
 
-
 func (s *Server) handleNotification(ctx context.Context, req jsonrpcRequest) {
 	logger := log.WithFunc("mcpserver.handleNotification")
 
 	switch req.Method {
 	case "notifications/initialized":
+	case "notifications/cancelled":
 		// no-op
 	default:
 		if s.notifyHandler != nil {
 			s.notifyHandler(req.Method, req.Params)
 		} else {
-			logger.Warnf(ctx, "unhandled notification: %s", req.Method)
+			logger.Debugf(ctx, "unhandled notification: %s", req.Method)
 		}
 	}
 }
 
-func readFrame(r *bufio.Reader) ([]byte, error) {
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return nil, err
-	}
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, headerPrefix) {
-		return nil, fmt.Errorf("expected Content-Length header, got: %q", line)
-	}
-	length, err := strconv.Atoi(strings.TrimPrefix(line, headerPrefix))
-	if err != nil {
-		return nil, fmt.Errorf("invalid Content-Length: %w", err)
-	}
-	if length <= 0 || length > maxContentLength {
-		return nil, fmt.Errorf("invalid Content-Length: %d", length)
-	}
+func readFrame(r *bufio.Reader) ([]byte, frameMode, error) {
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return nil, frameModeUnknown, err
+		}
 
-	sep, err := r.ReadString('\n')
-	if err != nil {
-		return nil, fmt.Errorf("read header separator: %w", err)
-	}
-	if strings.TrimSpace(sep) != "" {
-		return nil, fmt.Errorf("expected blank separator, got: %q", sep)
-	}
+		line = strings.TrimRight(line, "\r\n")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 
-	body := make([]byte, length)
-	if _, err := io.ReadFull(r, body); err != nil {
-		return nil, fmt.Errorf("read body (%d bytes): %w", length, err)
+		if !strings.HasPrefix(line, headerPrefix) {
+			return []byte(line), frameModeLine, nil
+		}
+
+		length, err := strconv.Atoi(strings.TrimPrefix(line, headerPrefix))
+		if err != nil {
+			return nil, frameModeUnknown, fmt.Errorf("invalid Content-Length: %w", err)
+		}
+		if length <= 0 || length > maxContentLength {
+			return nil, frameModeUnknown, fmt.Errorf("invalid Content-Length: %d", length)
+		}
+
+		for {
+			headerLine, err := r.ReadString('\n')
+			if err != nil {
+				return nil, frameModeUnknown, fmt.Errorf("read headers: %w", err)
+			}
+			if strings.TrimSpace(headerLine) == "" {
+				break
+			}
+		}
+
+		body := make([]byte, length)
+		if _, err := io.ReadFull(r, body); err != nil {
+			return nil, frameModeUnknown, fmt.Errorf("read body (%d bytes): %w", length, err)
+		}
+		return body, frameModeContentLength, nil
 	}
-	return body, nil
 }
 
 // writeMessage writes a Content-Length framed JSON-RPC message to stdout.
@@ -308,12 +332,34 @@ func (s *Server) writeMessage(msg any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
-	if _, err := s.writer.WriteString(header); err != nil {
-		return err
-	}
-	if _, err := s.writer.Write(data); err != nil {
-		return err
+	switch s.frameMode {
+	case frameModeContentLength:
+		header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
+		if _, err := s.writer.WriteString(header); err != nil {
+			return err
+		}
+		if _, err := s.writer.Write(data); err != nil {
+			return err
+		}
+	default:
+		if _, err := s.writer.Write(data); err != nil {
+			return err
+		}
+		if err := s.writer.WriteByte('\n'); err != nil {
+			return err
+		}
 	}
 	return s.writer.Flush()
+}
+
+func (s *Server) setFrameMode(mode frameMode) {
+	if mode == frameModeUnknown {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.frameMode == frameModeUnknown {
+		s.frameMode = mode
+	}
 }

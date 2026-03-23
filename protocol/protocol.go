@@ -47,6 +47,7 @@ type Permission struct {
 	Description  string `json:"description,omitempty"`
 	InputPreview string `json:"input_preview,omitempty"`
 	Behavior     string `json:"behavior,omitempty"` // "allow" or "deny"
+	TmuxPrompt   string `json:"-"`                  // not serialized; captured from tmux pane
 }
 
 // WriteEnvelope encodes and writes a JSON-line envelope to the writer.

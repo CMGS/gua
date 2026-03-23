@@ -20,7 +20,7 @@ import (
 const instructions = `Messages from WeChat arrive as <channel source="gua" sender="..." sender_id="...">.
 Media files are downloaded locally; paths appear as [图片: /path] or [文件: /path] in the content.
 Reply with the gua_reply tool, passing sender_id from the tag.
-For file responses, set file_path to the local file path.
+For file responses, set file_path to the absolute path of a real local file, never a directory.
 WeChat does not render Markdown — use plain text only.
 Respond in the same language as the user.`
 
@@ -37,7 +37,7 @@ var guaReplySchema = map[string]any{
 		},
 		"file_path": map[string]any{
 			"type":        "string",
-			"description": "optional local file path to send as attachment",
+			"description": "optional absolute path to a regular local file to send as attachment; must not be a directory",
 		},
 	},
 	"required": []string{"sender_id", "text"},
@@ -118,7 +118,7 @@ func run(ctx context.Context, socketPath, userID string) error {
 	err = <-errCh
 	cancel()
 	if err != nil {
-		logger.Warnf(ctx, "bridge exiting: %v", err)
+		logger.Infof(ctx, "bridge exiting: %v", err)
 	}
 	return err
 }
@@ -143,7 +143,7 @@ func handleNotification(ctx context.Context, conn net.Conn, method string, param
 	logger := log.WithFunc("bridge.handleNotification")
 
 	if method != "notifications/claude/channel/permission_request" {
-		logger.Warnf(ctx, "unhandled notification: %s", method)
+		logger.Debugf(ctx, "unhandled notification: %s", method)
 		return
 	}
 
@@ -196,7 +196,7 @@ func readDispatcher(ctx context.Context, r *bufio.Reader, srv *mcpserver.Server)
 			}
 
 		default:
-			logger.Warnf(ctx, "unknown envelope type: %s", env.Type)
+			logger.Debugf(ctx, "unknown envelope type: %s", env.Type)
 		}
 	}
 }
