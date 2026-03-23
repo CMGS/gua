@@ -5,7 +5,7 @@ import (
 	"io/fs"
 	"sync"
 
-	"github.com/CMGS/gua/libwechat/utils/jsonfile"
+	"github.com/CMGS/gua/utils"
 )
 
 // SyncState persists the long-poll sync buffer between restarts.
@@ -56,7 +56,7 @@ func (f *fileSyncState) Load() (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	state, err := jsonfile.Read[fileSyncData](f.path)
+	state, err := utils.ReadJSONFile[fileSyncData](f.path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", nil
@@ -76,7 +76,7 @@ func (f *fileSyncState) Save(buf string) error {
 	}
 
 	state := fileSyncData{GetUpdatesBuf: buf}
-	if err := jsonfile.Write(f.path, &state, 0o600); err != nil {
+	if err := utils.WriteJSONFile(f.path, &state, 0o600); err != nil {
 		return err
 	}
 	f.lastBuf = buf

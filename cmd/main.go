@@ -27,7 +27,8 @@ const (
 )
 
 func main() {
-	initLogging()
+	ctx := context.Background()
+	initLogging(ctx)
 
 	if len(os.Args) < 2 {
 		printUsage(os.Stderr)
@@ -38,9 +39,9 @@ func main() {
 	case "-h", "--help", "help":
 		printUsage(os.Stdout)
 	case "setup":
-		cmdSetup(os.Args[2:])
+		cmdSetup(ctx, os.Args[2:])
 	case "start":
-		cmdStart(os.Args[2:])
+		cmdStart(ctx, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		printUsage(os.Stderr)
@@ -48,8 +49,8 @@ func main() {
 	}
 }
 
-func initLogging() {
-	if err := log.SetupLog(context.Background(), &coretypes.ServerLogConfig{
+func initLogging(ctx context.Context) {
+	if err := log.SetupLog(ctx, &coretypes.ServerLogConfig{
 		Level:   "info",
 		UseJSON: false,
 	}, ""); err != nil {
@@ -66,14 +67,14 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  start    Start the server")
 }
 
-func cmdSetup(args []string) {
+func cmdSetup(ctx context.Context, args []string) {
 	logger := log.WithFunc("cmd.setup")
 
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	backendName := fs.String("backend", defaultBackend, "backend to setup")
 	fs.Parse(args) //nolint:errcheck
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	switch *backendName {
@@ -95,7 +96,7 @@ func cmdSetup(args []string) {
 	}
 }
 
-func cmdStart(args []string) {
+func cmdStart(ctx context.Context, args []string) {
 	logger := log.WithFunc("cmd.start")
 
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
@@ -107,7 +108,7 @@ func cmdStart(args []string) {
 	bridgeBin := fs.String("bridge-bin", "", "path to bridge binary (required)")
 	fs.Parse(args) //nolint:errcheck
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	if *workDir == "" {

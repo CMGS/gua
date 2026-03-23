@@ -25,6 +25,7 @@ import (
 const (
 	defaultClaudeCmd = "claude"
 	defaultBridgeBin = "gua-bridge"
+	defaultTmuxName  = "gua"
 
 	bridgeConnTimeout = 30 * time.Second
 	replyTimeout      = 300 * time.Second
@@ -40,6 +41,7 @@ type ClaudeCode struct {
 	claudeCmd   string
 	bridgeBin   string
 	model       string
+	tmuxName    string
 	baseWorkDir string
 	claudeMD    string
 	socketPath  string
@@ -57,6 +59,7 @@ func New(ctx context.Context, opts ...Option) (*ClaudeCode, error) {
 	c := &ClaudeCode{
 		claudeCmd: defaultClaudeCmd,
 		bridgeBin: defaultBridgeBin,
+		tmuxName:  defaultTmuxName,
 		sessions:  make(map[string]*userSession),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -95,6 +98,15 @@ func WithBridgeBin(bin string) Option {
 // WithModel sets the model for Claude Code.
 func WithModel(model string) Option {
 	return func(c *ClaudeCode) { c.model = model }
+}
+
+// WithTmuxName sets the tmux session name used to host Claude sessions.
+func WithTmuxName(name string) Option {
+	return func(c *ClaudeCode) {
+		if name != "" {
+			c.tmuxName = name
+		}
+	}
 }
 
 // WithWorkDir sets the base working directory for sessions.
@@ -164,7 +176,11 @@ func (c *ClaudeCode) Close(userID string) error {
 	if !ok {
 		return nil
 	}
-	return sess.close()
+	err := sess.close()
+	if killErr := c.killTmuxWindow(context.Background(), sess.windowID); killErr != nil && err == nil {
+		err = killErr
+	}
+	return err
 }
 
 // CloseAll terminates all sessions and cleans up the socket.
@@ -177,7 +193,8 @@ func (c *ClaudeCode) CloseAll() error {
 	c.mu.Unlock()
 
 	for _, sess := range sessions {
-		sess.close() //nolint:errcheck
+		sess.close()                                          //nolint:errcheck
+		c.killTmuxWindow(context.Background(), sess.windowID) //nolint:errcheck
 	}
 
 	c.listener.Close()
@@ -186,14 +203,15 @@ func (c *ClaudeCode) CloseAll() error {
 }
 
 type userSession struct {
-	userID  string
-	workDir string
-	process *exec.Cmd
-	conn    net.Conn
-	reader  *bufio.Reader
-	writer  io.Writer
-	replyCh chan *protocol.Envelope
-	cancel  context.CancelFunc
+	userID   string
+	workDir  string
+	windowID string
+	paneID   string
+	conn     net.Conn
+	reader   *bufio.Reader
+	writer   io.Writer
+	replyCh  chan *protocol.Envelope
+	cancel   context.CancelFunc
 
 	connReady chan struct{} // closed when bridge connects
 }
@@ -201,20 +219,6 @@ type userSession struct {
 func (s *userSession) close() error {
 	if s.cancel != nil {
 		s.cancel()
-	}
-	if s.process != nil && s.process.Process != nil {
-		s.process.Process.Signal(os.Interrupt) //nolint:errcheck
-		done := make(chan struct{})
-		go func() {
-			s.process.Wait() //nolint:errcheck
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			s.process.Process.Kill() //nolint:errcheck
-			s.process.Wait()         //nolint:errcheck
-		}
 	}
 	if s.conn != nil {
 		s.conn.Close()
@@ -280,19 +284,13 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 		connReady: make(chan struct{}),
 	}
 
-	args := []string{"--dangerously-load-development-channels", "server:gua"}
-	if c.model != "" {
-		args = append([]string{"--model", c.model}, args...)
-	}
-	cmd := exec.CommandContext(sessCtx, c.claudeCmd, args...)
-	cmd.Dir = workDir
-	cmd.Stderr = &stderrWriter{ctx: sessCtx, userID: userID}
-	sess.process = cmd
-
-	if err := cmd.Start(); err != nil {
+	windowID, paneID, err := c.startTmuxSession(sessCtx, workDir, normalized)
+	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("start claude: %w", err)
+		return nil, fmt.Errorf("start claude in tmux: %w", err)
 	}
+	sess.windowID = windowID
+	sess.paneID = paneID
 
 	// Register session under lock (brief).
 	c.mu.Lock()
@@ -300,19 +298,22 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 		// Another goroutine won the race — clean up ours.
 		c.mu.Unlock()
 		cancel()
-		cmd.Process.Kill() //nolint:errcheck
-		cmd.Wait()         //nolint:errcheck
+		c.killTmuxWindow(context.Background(), windowID) //nolint:errcheck
 		return existing, nil
 	}
 	c.sessions[userID] = sess
 	c.mu.Unlock()
 
-	logger.Infof(c.ctx, "spawned claude pid=%d user=%s workdir=%s", cmd.Process.Pid, userID, workDir)
+	logger.Infof(c.ctx, "spawned claude tmux_session=%s window=%s pane=%s user=%s workdir=%s", c.tmuxName, windowID, paneID, userID, workDir)
 
 	select {
 	case <-sess.connReady:
 	case <-time.After(bridgeConnTimeout):
+		pane, _ := c.capturePane(context.Background(), paneID)
 		c.Close(userID) //nolint:errcheck
+		if pane != "" {
+			return nil, fmt.Errorf("bridge connection timeout for user %s\npane output:\n%s", userID, pane)
+		}
 		return nil, fmt.Errorf("bridge connection timeout for user %s", userID)
 	case <-sessCtx.Done():
 		c.Close(userID) //nolint:errcheck
@@ -320,6 +321,81 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	}
 
 	return sess, nil
+}
+
+func (c *ClaudeCode) startTmuxSession(ctx context.Context, workDir, windowName string) (string, string, error) {
+	command := c.tmuxClaudeCommand()
+	format := "#{window_id} #{pane_id}"
+
+	if _, err := c.tmux(ctx, "has-session", "-t", c.tmuxName); err != nil {
+		out, err := c.tmux(ctx, "new-session", "-d", "-s", c.tmuxName, "-n", windowName, "-c", workDir, "-P", "-F", format, command)
+		if err != nil {
+			return "", "", err
+		}
+		return parseTmuxIDs(out)
+	}
+
+	out, err := c.tmux(ctx, "new-window", "-d", "-t", c.tmuxName, "-n", windowName, "-c", workDir, "-P", "-F", format, command)
+	if err != nil {
+		return "", "", err
+	}
+	return parseTmuxIDs(out)
+}
+
+func (c *ClaudeCode) tmuxClaudeCommand() string {
+	shellPath := os.Getenv("SHELL")
+	if shellPath == "" {
+		shellPath = "/bin/bash"
+	}
+
+	args := []string{shellQuote(c.claudeCmd)}
+	if c.model != "" {
+		args = append(args, shellQuote("--model"), shellQuote(c.model))
+	}
+	args = append(args, shellQuote("--dangerously-load-development-channels"), shellQuote("server:gua"))
+
+	claudeCmd := strings.Join(args, " ")
+	inner := fmt.Sprintf("%s; code=$?; printf '\\n[gua] claude exited with code %%s\\n' \"$code\"; exec %s -l", claudeCmd, shellQuote(shellPath))
+	return fmt.Sprintf("%s -lc %s", shellQuote(shellPath), shellQuote(inner))
+}
+
+func (c *ClaudeCode) tmux(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "tmux", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("tmux %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (c *ClaudeCode) capturePane(ctx context.Context, paneID string) (string, error) {
+	if paneID == "" {
+		return "", nil
+	}
+	return c.tmux(ctx, "capture-pane", "-p", "-t", paneID, "-S", "-80")
+}
+
+func (c *ClaudeCode) killTmuxWindow(ctx context.Context, windowID string) error {
+	if windowID == "" {
+		return nil
+	}
+	_, err := c.tmux(ctx, "kill-window", "-t", windowID)
+	return err
+}
+
+func parseTmuxIDs(out string) (string, string, error) {
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) < 2 {
+		return "", "", fmt.Errorf("unexpected tmux output: %q", out)
+	}
+	return fields[0], fields[1], nil
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func (c *ClaudeCode) acceptLoop() {
@@ -378,7 +454,11 @@ func (c *ClaudeCode) handleBridgeConn(conn net.Conn) {
 	c.readBridgeLoop(sess)
 
 	// Bridge disconnected — clean up the zombie session.
-	logger.Warnf(c.ctx, "bridge disconnected for user=%s, cleaning up session", sess.userID)
+	if pane, err := c.capturePane(context.Background(), sess.paneID); err == nil && pane != "" {
+		logger.Warnf(c.ctx, "bridge disconnected for user=%s, cleaning up session\npane output:\n%s", sess.userID, pane)
+	} else {
+		logger.Warnf(c.ctx, "bridge disconnected for user=%s, cleaning up session", sess.userID)
+	}
 	c.Close(sess.userID) //nolint:errcheck
 }
 
@@ -418,19 +498,4 @@ func (c *ClaudeCode) readBridgeLoop(sess *userSession) {
 			logger.Warnf(c.ctx, "unknown envelope from bridge: %s", env.Type)
 		}
 	}
-}
-
-type stderrWriter struct {
-	ctx    context.Context
-	userID string
-}
-
-func (w *stderrWriter) Write(p []byte) (int, error) {
-	logger := log.WithFunc("claude.stderr")
-	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
-		if line != "" {
-			logger.Debugf(w.ctx, "[user=%s] %s", w.userID, line)
-		}
-	}
-	return len(p), nil
 }
