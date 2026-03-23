@@ -19,10 +19,11 @@ const defaultBaseURL = "https://ilinkai.weixin.qq.com"
 
 // Client is the low-level iLink HTTP API client.
 type Client struct {
-	baseURL  string
-	botToken string
-	botID    string
-	httpDoer HTTPDoer
+	baseURL   string
+	botToken  string
+	botID     string
+	httpDoer  HTTPDoer
+	wechatUIN string // generated once per client
 }
 
 // NewClient creates an authenticated client from credentials.
@@ -37,10 +38,11 @@ func NewClient(creds *types.Credentials, opts ...ClientOption) *Client {
 	}
 
 	c := &Client{
-		baseURL:  baseURL,
-		botToken: creds.BotToken,
-		botID:    creds.ILinkBotID,
-		httpDoer: &http.Client{Timeout: 60 * time.Second},
+		baseURL:   baseURL,
+		botToken:  creds.BotToken,
+		botID:     creds.ILinkBotID,
+		httpDoer:  &http.Client{Timeout: 60 * time.Second},
+		wechatUIN: generateWechatUIN(),
 	}
 
 	for _, opt := range opts {
@@ -52,8 +54,9 @@ func NewClient(creds *types.Credentials, opts ...ClientOption) *Client {
 // NewUnauthenticatedClient creates a client for the login flow (no auth token).
 func NewUnauthenticatedClient(opts ...ClientOption) *Client {
 	c := &Client{
-		baseURL:  defaultBaseURL,
-		httpDoer: &http.Client{Timeout: 60 * time.Second},
+		baseURL:   defaultBaseURL,
+		httpDoer:  &http.Client{Timeout: 60 * time.Second},
+		wechatUIN: generateWechatUIN(),
 	}
 
 	for _, opt := range opts {
@@ -73,49 +76,49 @@ func (c *Client) Doer() HTTPDoer { return c.httpDoer }
 
 // GetUpdates long-polls for new messages.
 func (c *Client) GetUpdates(ctx context.Context, buf string) (*types.GetUpdatesResponse, error) {
-	var resp types.GetUpdatesResponse
+	resp := &types.GetUpdatesResponse{}
 	err := c.doRequest(ctx, http.MethodPost, "/ilink/bot/getupdates", &types.GetUpdatesRequest{
 		GetUpdatesBuf: buf,
 		BaseInfo:      types.BaseInfo{},
-	}, &resp)
+	}, resp)
 	if err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	return resp, nil
 }
 
 // SendMessage sends a message to a user.
 func (c *Client) SendMessage(ctx context.Context, req *types.SendMessageRequest) (*types.SendMessageResponse, error) {
-	var resp types.SendMessageResponse
-	if err := c.doRequest(ctx, http.MethodPost, "/ilink/bot/sendmessage", req, &resp); err != nil {
+	resp := &types.SendMessageResponse{}
+	if err := c.doRequest(ctx, http.MethodPost, "/ilink/bot/sendmessage", req, resp); err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	return resp, nil
 }
 
 // GetConfig fetches bot config (typing_ticket) for a user.
 func (c *Client) GetConfig(ctx context.Context, userID, contextToken string) (*types.GetConfigResponse, error) {
-	var resp types.GetConfigResponse
+	resp := &types.GetConfigResponse{}
 	err := c.doRequest(ctx, http.MethodPost, "/ilink/bot/getconfig", &types.GetConfigRequest{
 		ILinkUserID:  userID,
 		ContextToken: contextToken,
 		BaseInfo:     types.BaseInfo{},
-	}, &resp)
+	}, resp)
 	if err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	return resp, nil
 }
 
 // SendTyping sends a typing indicator to a user.
 func (c *Client) SendTyping(ctx context.Context, userID, ticket string, status int) error {
-	var resp types.SendTypingResponse
+	resp := &types.SendTypingResponse{}
 	err := c.doRequest(ctx, http.MethodPost, "/ilink/bot/sendtyping", &types.SendTypingRequest{
 		ILinkUserID:  userID,
 		TypingTicket: ticket,
 		Status:       status,
 		BaseInfo:     types.BaseInfo{},
-	}, &resp)
+	}, resp)
 	if err != nil {
 		return err
 	}
@@ -127,11 +130,11 @@ func (c *Client) SendTyping(ctx context.Context, userID, ticket string, status i
 
 // GetUploadURL gets a signed upload URL from the iLink API.
 func (c *Client) GetUploadURL(ctx context.Context, req *types.GetUploadURLRequest) (*types.GetUploadURLResponse, error) {
-	var resp types.GetUploadURLResponse
-	if err := c.doRequest(ctx, http.MethodPost, "/ilink/bot/getuploadurl", req, &resp); err != nil {
+	resp := &types.GetUploadURLResponse{}
+	if err := c.doRequest(ctx, http.MethodPost, "/ilink/bot/getuploadurl", req, resp); err != nil {
 		return nil, err
 	}
-	return &resp, nil
+	return resp, nil
 }
 
 // DoGet performs a GET request with auth headers.
@@ -193,7 +196,7 @@ func (c *Client) setHeaders(req *http.Request, method string) {
 	if c.botToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.botToken)
 	}
-	req.Header.Set("X-WECHAT-UIN", generateWechatUIN())
+	req.Header.Set("X-WECHAT-UIN", c.wechatUIN)
 }
 
 // generateWechatUIN generates a random X-WECHAT-UIN header value.
