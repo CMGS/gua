@@ -43,7 +43,7 @@ func (w *WeChat) Setup(ctx context.Context) error {
 	}
 
 	// QR code must render to stderr (stdout may be used by MCP protocol).
-	logger.Infof(ctx, "QR code ready, scan with WeChat")
+	logger.Infof(ctx, "%s", "QR code ready, scan with WeChat")
 	qrterminal.GenerateWithConfig(qr.QRCodeImgContent, qrterminal.Config{
 		Level:          qrterminal.L,
 		Writer:         os.Stderr,

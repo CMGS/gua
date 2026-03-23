@@ -54,12 +54,12 @@ func main() {
 	defer cancel()
 
 	if *socketPath == "" || *userID == "" {
-		logger.Errorf(ctx, nil, "usage: bridge --socket /path/to/socket --user userID")
+		fmt.Fprintln(os.Stderr, "usage: bridge --socket /path/to/socket --user userID")
 		os.Exit(1)
 	}
 
 	if err := run(ctx, *socketPath, *userID); err != nil {
-		logger.Errorf(ctx, err, "bridge exited")
+		logger.Errorf(ctx, err, "%s", "bridge exited")
 		os.Exit(1)
 	}
 }
