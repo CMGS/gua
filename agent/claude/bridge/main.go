@@ -43,30 +43,33 @@ var guaReplySchema = map[string]any{
 }
 
 func main() {
-	logger := log.WithFunc("bridge.main")
+	os.Exit(func() int {
+		logger := log.WithFunc("bridge.main")
 
-	socketPath := flag.String("socket", "", "path to dispatcher Unix socket")
-	userID := flag.String("user", "", "user ID for this bridge session")
-	instrText := flag.String("instructions", "", "MCP channel instructions (overrides default)")
-	flag.Parse()
+		socketPath := flag.String("socket", "", "path to dispatcher Unix socket")
+		userID := flag.String("user", "", "user ID for this bridge session")
+		instrText := flag.String("instructions", "", "MCP channel instructions (overrides default)")
+		flag.Parse()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+		defer cancel()
 
-	if *socketPath == "" || *userID == "" {
-		logger.Errorf(ctx, nil, "usage: bridge --socket /path/to/socket --user userID")
-		os.Exit(1)
-	}
+		if *socketPath == "" || *userID == "" {
+			logger.Errorf(ctx, nil, "usage: bridge --socket /path/to/socket --user userID")
+			return 1
+		}
 
-	instr := defaultInstructions
-	if *instrText != "" {
-		instr = *instrText
-	}
+		instr := defaultInstructions
+		if *instrText != "" {
+			instr = *instrText
+		}
 
-	if err := run(ctx, *socketPath, *userID, instr); err != nil {
-		logger.Errorf(ctx, err, "bridge exited")
-		os.Exit(1)
-	}
+		if err := run(ctx, *socketPath, *userID, instr); err != nil {
+			logger.Errorf(ctx, err, "bridge exited")
+			return 1
+		}
+		return 0
+	}())
 }
 
 func run(ctx context.Context, socketPath, userID, instructions string) error {

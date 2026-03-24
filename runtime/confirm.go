@@ -10,7 +10,7 @@ import (
 // AutoConfirmLoop polls a process for interactive prompts and auto-confirms them.
 // confirmKeys are the keys sent to confirm (e.g. "Enter" for Claude, "y"+"Enter" for others).
 // filter is the agent-specific line filter for prompt detection.
-// Stops when ready is closed, timeout fires, or ctx is cancelled.
+// Stops when ready is closed, timeout fires, or ctx is canceled.
 func AutoConfirmLoop(ctx context.Context, rt Runtime, proc *Process, ready <-chan struct{}, filter LineFilter, confirmKeys []string, interval, timeout time.Duration) error {
 	logger := log.WithFunc("runtime.AutoConfirmLoop")
 

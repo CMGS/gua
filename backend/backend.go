@@ -8,11 +8,11 @@ import (
 
 // InboundMessage is a platform-agnostic inbound message.
 type InboundMessage struct {
-	SenderID   string           // platform user ID (e.g. xxx@im.wechat)
-	SenderName string           // display name
-	Text       string           // text content (includes quoted message formatting)
+	SenderID   string            // platform user ID (e.g. xxx@im.wechat)
+	SenderName string            // display name
+	Text       string            // text content (includes quoted message formatting)
 	MediaFiles []types.MediaFile // media downloaded to local paths
-	ReplyToken string           // platform-specific reply routing token
+	ReplyToken string            // platform-specific reply routing token
 }
 
 // OutboundMessage is a platform-agnostic outbound message.

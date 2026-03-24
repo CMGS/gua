@@ -45,9 +45,9 @@ func main() {
 	case "-h", "--help", "help":
 		printUsage(os.Stdout)
 	case "setup":
-		cmdSetup(ctx, os.Args[2:])
+		os.Exit(cmdSetup(ctx, os.Args[2:]))
 	case "start":
-		cmdStart(ctx, os.Args[2:])
+		os.Exit(cmdStart(ctx, os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		printUsage(os.Stderr)
@@ -73,7 +73,7 @@ func printUsage(w *os.File) {
 	_, _ = fmt.Fprintln(w, "  start    Start the server")
 }
 
-func cmdSetup(ctx context.Context, args []string) {
+func cmdSetup(ctx context.Context, args []string) int {
 	logger := log.WithFunc("cmd.setup")
 
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
@@ -88,22 +88,23 @@ func cmdSetup(ctx context.Context, args []string) {
 		w := wechat.New(nil)
 		if err := w.Setup(ctx); err != nil {
 			logger.Errorf(ctx, err, "setup failed")
-			os.Exit(1)
+			return 1
 		}
 		creds := w.Creds()
 		credPath := filepath.Join(accountsDir(*backendName), utils.NormalizeID(creds.ILinkBotID)+".json")
 		if err := auth.SaveCredentials(credPath, creds); err != nil {
 			logger.Errorf(ctx, err, "save credentials")
-			os.Exit(1)
+			return 1
 		}
 		logger.Infof(ctx, "credentials saved to %s", credPath)
 	default:
 		logger.Errorf(ctx, nil, "unknown backend: %s", *backendName)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
-func cmdStart(ctx context.Context, args []string) {
+func cmdStart(ctx context.Context, args []string) int {
 	logger := log.WithFunc("cmd.start")
 
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
@@ -121,22 +122,22 @@ func cmdStart(ctx context.Context, args []string) {
 
 	if *workDir == "" {
 		logger.Errorf(ctx, nil, "--work-dir is required")
-		os.Exit(1)
+		return 1
 	}
 	if *bridgeBin == "" {
 		logger.Errorf(ctx, nil, "--bridge-bin is required")
-		os.Exit(1)
+		return 1
 	}
 
 	dir := accountsDir(*backendName)
 	allCreds, err := loadAllAccounts(ctx, dir)
 	if err != nil {
 		logger.Errorf(ctx, err, "load accounts from %s", dir)
-		os.Exit(1)
+		return 1
 	}
 	if len(allCreds) == 0 {
 		logger.Errorf(ctx, nil, "no accounts in %s, run setup first", dir)
-		os.Exit(1)
+		return 1
 	}
 
 	var wg sync.WaitGroup
@@ -157,6 +158,7 @@ func cmdStart(ctx context.Context, args []string) {
 		}(creds)
 	}
 	wg.Wait()
+	return 0
 }
 
 func runAccount(ctx context.Context, creds *types.Credentials, backendName, agentName string, opts ...claude.Option) {
