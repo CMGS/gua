@@ -34,7 +34,7 @@ type Response struct {
 	Text       string          // reply text
 	Files      []string        // file paths extracted from the reply
 	Prompt     PromptType      // whether this response is a prompt requiring user action
-	PromptText string          // raw prompt content (from tmux capture)
+	PromptText string          // raw prompt content (from runtime capture)
 	Options    []string        // available options ["1","2","3"] or ["yes","no"]
 	Permission *PermissionInfo // only when Prompt == PromptPermission
 }
@@ -42,9 +42,16 @@ type Response struct {
 // Agent is an AI backend (Claude Code, Codex, etc.).
 type Agent interface {
 	Name() string
-	Chat(ctx context.Context, userID string, msg Message) (*Response, error)
-	Control(ctx context.Context, userID string, action types.Action) (*Response, bool, error)
-	Restart(ctx context.Context, userID string, flags map[string]string) (restarted bool, err error)
+	// Send sends a message to the user's agent session. Non-blocking.
+	// Responses arrive asynchronously via the channel returned by Subscribe.
+	Send(ctx context.Context, userID string, msg Message) error
+	// Control sends a control action (confirm/deny/select). Non-blocking.
+	Control(ctx context.Context, userID string, action types.Action) error
+	// Subscribe returns a channel that receives all responses for a user.
+	// Created on first call, persists until Close.
+	Subscribe(userID string) <-chan *Response
+	// Restart restarts the user's session with new flags.
+	Restart(ctx context.Context, userID string, flags map[string]string) (bool, error)
 	Close(userID string) error
 	CloseAll() error
 }

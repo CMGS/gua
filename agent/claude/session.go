@@ -13,6 +13,7 @@ import (
 
 	"github.com/projecteru2/core/log"
 
+	"github.com/CMGS/gua/agent"
 	"github.com/CMGS/gua/agent/claude/protocol"
 	"github.com/CMGS/gua/runtime"
 	"github.com/CMGS/gua/utils"
@@ -24,8 +25,7 @@ type userSession struct {
 	proc    *runtime.Process
 	conn    net.Conn
 	reader  *bufio.Reader
-	replyCh chan *protocol.Envelope
-	permCh  chan *protocol.Permission
+	outCh   chan *agent.Response
 	cancel  context.CancelFunc
 
 	connReady chan struct{} // closed when bridge connects
@@ -42,6 +42,20 @@ func (s *userSession) close() {
 	}
 	if s.conn != nil {
 		_ = s.conn.Close()
+	}
+	if s.outCh != nil {
+		close(s.outCh)
+	}
+}
+
+func (s *userSession) pushResponse(resp *agent.Response) {
+	defer func() {
+		recover() //nolint:errcheck // send on closed channel during shutdown
+	}()
+	select {
+	case s.outCh <- resp:
+	default:
+		// channel full, drop this response
 	}
 }
 
@@ -107,8 +121,7 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	sess := &userSession{
 		userID:    userID,
 		workDir:   workDir,
-		replyCh:   make(chan *protocol.Envelope, 64),
-		permCh:    make(chan *protocol.Permission, 8),
+		outCh:     make(chan *agent.Response, 64),
 		cancel:    cancel,
 		connReady: make(chan struct{}),
 	}

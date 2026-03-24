@@ -41,21 +41,21 @@ func (c *ClaudeCode) buildCommand(userID string, continueSession bool) string {
 	return fmt.Sprintf("%s -lc %s", runtime.ShellQuote(shellPath), runtime.ShellQuote(inner))
 }
 
-func (c *ClaudeCode) handleInteractiveControl(ctx context.Context, sess *userSession, action types.Action) (*agent.Response, error) {
+func (c *ClaudeCode) handleInteractiveControl(ctx context.Context, sess *userSession, action types.Action) error {
 	prompt := sess.prompt.Get()
 	keys := actionToKeys(action, prompt)
 	if keys == nil {
-		return interactiveResponse(prompt), nil
+		sess.pushResponse(interactiveResponse(prompt))
+		return nil
 	}
 	if err := c.rt.SendInput(ctx, sess.proc, keys...); err != nil {
-		return nil, err
+		return err
 	}
 	sess.prompt.Clear()
-
-	return c.waitForReplyWithTimeout(ctx, sess, controlWaitTimeout, false)
+	return nil
 }
 
-func (c *ClaudeCode) handlePermissionControl(ctx context.Context, sess *userSession, action types.Action, perm *protocol.Permission) (*agent.Response, error) {
+func (c *ClaudeCode) handlePermissionControl(ctx context.Context, sess *userSession, action types.Action, perm *protocol.Permission) error {
 	var behavior string
 	switch action.Type {
 	case types.ActionConfirm:
@@ -63,7 +63,9 @@ func (c *ClaudeCode) handlePermissionControl(ctx context.Context, sess *userSess
 	case types.ActionDeny:
 		behavior = behaviorDeny
 	default:
-		return permissionResponse(perm), nil
+		// Re-push the prompt
+		sess.pushResponse(permissionResponse(perm))
+		return nil
 	}
 
 	reply := protocol.Permission{
@@ -71,12 +73,12 @@ func (c *ClaudeCode) handlePermissionControl(ctx context.Context, sess *userSess
 		Behavior:  behavior,
 	}
 	if err := sess.writeEnvelope(protocol.TypePermissionReply, reply); err != nil {
-		return nil, fmt.Errorf("send permission reply: %w", err)
+		return fmt.Errorf("send permission reply: %w", err)
 	}
 	sess.permission.Clear()
 
-	if behavior != behaviorAllow {
-		return &agent.Response{Text: "已拒绝该操作。"}, nil
+	if behavior == behaviorDeny {
+		sess.pushResponse(&agent.Response{Text: "已拒绝该操作。"})
 	}
-	return c.waitForReply(ctx, sess)
+	return nil
 }

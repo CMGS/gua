@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/projecteru2/core/log"
 
@@ -13,19 +13,18 @@ import (
 	"github.com/CMGS/gua/channel"
 )
 
-const (
-	maxConcurrent  = 32
-	workingTimeout = 30 * time.Second // notify user if agent hasn't replied
-)
+const maxConcurrent = 32
 
 type commandHandler func(ctx context.Context, msg channel.InboundMessage) *agent.Response
 
 // Server orchestrates a Channel and an Agent.
 type Server struct {
-	channel  channel.Channel
-	agent    agent.Agent
-	sem      chan struct{}
-	commands map[string]commandHandler
+	channel     channel.Channel
+	agent       agent.Agent
+	sem         chan struct{}
+	commands    map[string]commandHandler
+	replyTokens sync.Map // userID → latest replyToken
+	subscribers sync.Map // userID → bool (whether responseLoop is running)
 }
 
 // New creates a Server that bridges the given channel and agent.
@@ -69,6 +68,9 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 		return
 	}
 
+	// Track latest reply token for this user.
+	s.replyTokens.Store(msg.SenderID, msg.ReplyToken)
+
 	presenter := s.channel.Presenter()
 	trimmed := strings.TrimSpace(msg.Text)
 
@@ -76,73 +78,77 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 	if handler, ok := s.commands[strings.ToLower(trimmed)]; ok {
 		s.sendText(ctx, msg, "processing...")
 		resp := handler(ctx, msg)
-		s.sendResponse(ctx, msg, presenter, resp)
+		s.sendResponseToUser(ctx, msg.SenderID, presenter, resp)
 		return
 	}
 
 	// 2. Control actions.
-	if len(msg.MediaFiles) == 0 { //nolint:nestif
+	if len(msg.MediaFiles) == 0 {
 		if action := presenter.ParseAction(trimmed); action != nil {
-			resp, handled, err := s.agent.Control(ctx, msg.SenderID, *action)
-			if handled {
-				if err != nil {
-					s.sendError(ctx, msg, presenter, err)
-					return
-				}
-				s.sendResponse(ctx, msg, presenter, resp)
-				return
+			if err := s.agent.Control(ctx, msg.SenderID, *action); err != nil {
+				s.sendText(ctx, msg, presenter.FormatError(err))
 			}
+			return
 		}
 	}
 
-	// 3. Normal chat — with "working" notification if agent is slow.
+	// 3. Send message first (creates session if needed), then ensure response loop.
 	stopTyping := s.channel.StartTyping(ctx, msg.SenderID, msg.ReplyToken)
 
 	agentMsg := FormatInbound(msg, presenter)
-
-	type chatResult struct {
-		resp *agent.Response
-		err  error
-	}
-	resultCh := make(chan chatResult, 1)
-	go func() {
-		resp, err := s.agent.Chat(ctx, msg.SenderID, agentMsg)
-		resultCh <- chatResult{resp, err}
-	}()
-
-	notified := false
-	timer := time.NewTimer(workingTimeout)
-	defer timer.Stop()
-
-	select {
-	case r := <-resultCh:
+	if err := s.agent.Send(ctx, msg.SenderID, agentMsg); err != nil {
 		stopTyping()
-		if r.err != nil {
-			s.sendError(ctx, msg, presenter, r.err)
-			return
-		}
-		s.sendResponse(ctx, msg, presenter, r.resp)
-	case <-timer.C:
-		s.sendText(ctx, msg, "still working...")
-		notified = true
-	case <-ctx.Done():
-		stopTyping()
+		logger := log.WithFunc("server.handleInbound")
+		logger.Warnf(ctx, "send to agent for %s: %v", msg.SenderID, err)
+		s.sendText(ctx, msg, presenter.FormatError(err))
 		return
 	}
 
-	if notified {
-		select {
-		case r := <-resultCh:
-			stopTyping()
-			if r.err != nil {
-				s.sendError(ctx, msg, presenter, r.err)
-				return
-			}
-			s.sendResponse(ctx, msg, presenter, r.resp)
-		case <-ctx.Done():
+	// Subscribe AFTER Send — session now exists.
+	s.ensureResponseLoop(ctx, msg.SenderID, stopTyping)
+}
+
+func (s *Server) ensureResponseLoop(ctx context.Context, userID string, stopTyping func()) {
+	if _, loaded := s.subscribers.LoadOrStore(userID, true); loaded {
+		if stopTyping != nil {
 			stopTyping()
 		}
+		return // already running
 	}
+
+	ch := s.agent.Subscribe(userID)
+	presenter := s.channel.Presenter()
+
+	go func() {
+		logger := log.WithFunc("server.responseLoop")
+		defer s.subscribers.Delete(userID)
+		defer s.replyTokens.Delete(userID)
+
+		typingStopped := false
+		for resp := range ch {
+			if !typingStopped && stopTyping != nil {
+				stopTyping()
+				typingStopped = true
+			}
+			token := s.getReplyToken(userID)
+			if token == "" {
+				logger.Warnf(ctx, "no reply token for user %s, dropping response", userID)
+				continue
+			}
+			s.sendResponseToUser(ctx, userID, presenter, resp)
+		}
+		if !typingStopped && stopTyping != nil {
+			stopTyping()
+		}
+	}()
+}
+
+func (s *Server) getReplyToken(userID string) string {
+	v, ok := s.replyTokens.Load(userID)
+	if !ok {
+		return ""
+	}
+	return v.(string)
 }
 
 func (s *Server) cmdYolo(ctx context.Context, msg channel.InboundMessage) *agent.Response {
@@ -175,22 +181,14 @@ func (s *Server) sendText(ctx context.Context, msg channel.InboundMessage, text 
 	})
 }
 
-func (s *Server) sendError(ctx context.Context, msg channel.InboundMessage, p channel.Presenter, err error) {
-	logger := log.WithFunc("server.sendError")
-	logger.Warnf(ctx, "error for %s: %v", msg.SenderID, err)
-	_ = s.channel.Send(ctx, channel.OutboundMessage{
-		RecipientID: msg.SenderID,
-		Text:        p.FormatError(err),
-		ReplyToken:  msg.ReplyToken,
-	})
-}
-
-func (s *Server) sendResponse(ctx context.Context, msg channel.InboundMessage, p channel.Presenter, resp *agent.Response) {
+func (s *Server) sendResponseToUser(ctx context.Context, userID string, p channel.Presenter, resp *agent.Response) {
 	logger := log.WithFunc("server.sendResponse")
 
 	if resp == nil {
 		return
 	}
+
+	token := s.getReplyToken(userID)
 
 	if resp.Prompt != agent.PromptNone {
 		toolName, description := "", ""
@@ -200,9 +198,9 @@ func (s *Server) sendResponse(ctx context.Context, msg channel.InboundMessage, p
 		}
 		text := p.FormatPrompt(resp.PromptText, resp.Options, toolName, description)
 		_ = s.channel.Send(ctx, channel.OutboundMessage{
-			RecipientID: msg.SenderID,
+			RecipientID: userID,
 			Text:        text,
-			ReplyToken:  msg.ReplyToken,
+			ReplyToken:  token,
 		})
 		return
 	}
@@ -212,21 +210,21 @@ func (s *Server) sendResponse(ctx context.Context, msg channel.InboundMessage, p
 
 	if cleanText != "" {
 		if err := s.channel.Send(ctx, channel.OutboundMessage{
-			RecipientID: msg.SenderID,
+			RecipientID: userID,
 			Text:        cleanText,
-			ReplyToken:  msg.ReplyToken,
+			ReplyToken:  token,
 		}); err != nil {
-			logger.Warnf(ctx, "send text to %s: %v", msg.SenderID, err)
+			logger.Warnf(ctx, "send text to %s: %v", userID, err)
 		}
 	}
 
 	for _, f := range files {
 		if err := s.channel.Send(ctx, channel.OutboundMessage{
-			RecipientID: msg.SenderID,
+			RecipientID: userID,
 			FilePath:    f,
-			ReplyToken:  msg.ReplyToken,
+			ReplyToken:  token,
 		}); err != nil {
-			logger.Warnf(ctx, "send file %s to %s: %v", f, msg.SenderID, err)
+			logger.Warnf(ctx, "send file %s to %s: %v", f, userID, err)
 		}
 		_ = os.Remove(f)
 	}

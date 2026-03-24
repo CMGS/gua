@@ -22,8 +22,6 @@ const (
 	defaultBridgeBin = "gua-bridge"
 
 	bridgeConnTimeout  = 30 * time.Second
-	replyTimeout       = 300 * time.Second
-	controlWaitTimeout = 15 * time.Second
 	promptPollInterval = 2 * time.Second
 
 	behaviorAllow = "allow"
@@ -122,46 +120,55 @@ func WithClaudeMD(content string) Option {
 // Name returns the agent identifier.
 func (c *ClaudeCode) Name() string { return "claude" }
 
-// Chat sends a message to the user's Claude Code session and waits for a reply.
-// On first call for a user, the session is created and all startup prompts are
-// auto-confirmed. The message is sent only after the bridge is fully connected.
-func (c *ClaudeCode) Chat(ctx context.Context, userID string, msg agent.Message) (*agent.Response, error) {
+// Send sends a message to the user's Claude Code session. Non-blocking.
+// Responses arrive asynchronously via the channel returned by Subscribe.
+func (c *ClaudeCode) Send(ctx context.Context, userID string, msg agent.Message) error {
 	sess, err := c.getOrCreateSession(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("get session: %w", err)
+		return err
 	}
 
 	if perm := sess.permission.Get(); perm != nil {
-		return permissionResponse(perm), nil
+		// pending permission — push it again so user sees it
+		sess.pushResponse(permissionResponse(perm))
+		return nil
 	}
 
-	if err := c.sendChannelEvent(sess, userID, msg); err != nil {
-		return nil, fmt.Errorf("send channel event: %w", err)
-	}
-
-	return c.waitForReply(ctx, sess)
+	return c.sendChannelEvent(sess, userID, msg)
 }
 
-// Control handles out-of-band user confirmations such as /yes or /no.
-func (c *ClaudeCode) Control(ctx context.Context, userID string, action types.Action) (*agent.Response, bool, error) {
+// Control handles out-of-band user actions such as confirm/deny/select.
+func (c *ClaudeCode) Control(ctx context.Context, userID string, action types.Action) error {
 	c.mu.RLock()
 	sess, ok := c.sessions[userID]
 	c.mu.RUnlock()
 	if !ok {
-		return nil, false, nil
+		return nil
 	}
 
 	if perm := sess.permission.Get(); perm != nil {
-		resp, err := c.handlePermissionControl(ctx, sess, action, perm)
-		return resp, true, err
+		return c.handlePermissionControl(ctx, sess, action, perm)
 	}
 
 	if sess.prompt.Get() != "" {
-		resp, err := c.handleInteractiveControl(ctx, sess, action)
-		return resp, true, err
+		return c.handleInteractiveControl(ctx, sess, action)
 	}
 
-	return nil, false, nil
+	return nil
+}
+
+// Subscribe returns a channel that receives all responses for a user.
+func (c *ClaudeCode) Subscribe(userID string) <-chan *agent.Response {
+	c.mu.RLock()
+	sess, ok := c.sessions[userID]
+	c.mu.RUnlock()
+	if !ok {
+		// Return a closed channel if no session
+		ch := make(chan *agent.Response)
+		close(ch)
+		return ch
+	}
+	return sess.outCh
 }
 
 // Close terminates a user's session.
@@ -227,11 +234,24 @@ func (c *ClaudeCode) Restart(ctx context.Context, userID string, flags map[strin
 
 	// Respawn in the same pane — keeps workdir, session data intact.
 	sess.respawning.Set(true)
-	sess.close()
+	// Close conn but do NOT close outCh — server's responseLoop is still reading from it.
+	if sess.cancel != nil {
+		sess.cancel()
+	}
+	if sess.conn != nil {
+		_ = sess.conn.Close()
+	}
 	sess.writer.Clear()
 	sess.permission.Clear()
 	sess.prompt.Clear()
+
+	c.mu.Lock()
 	sess.connReady = make(chan struct{})
+	c.mu.Unlock()
+
+	for len(sess.outCh) > 0 {
+		<-sess.outCh
+	}
 
 	command := c.buildCommand(userID, true)
 	logger := log.WithFunc("claude.Restart")

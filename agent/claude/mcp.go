@@ -3,9 +3,7 @@ package claude
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"net"
-	"time"
 
 	"github.com/projecteru2/core/log"
 
@@ -72,7 +70,11 @@ func (c *ClaudeCode) handleBridgeConn(conn net.Conn) {
 	}
 	logger.Infof(c.ctx, "bridge connected for user=%s", reg.UserID)
 
+	// Stream-watch output and read bridge events in parallel.
+	sessCtx, sessCancel := context.WithCancel(c.ctx)
+	go c.watchOutput(sessCtx, sess)
 	c.readBridgeLoop(sess)
+	sessCancel()
 
 	// If a Respawn is in progress, the bridge disconnect is expected — don't clean up.
 	if sess.respawning.Get() {
@@ -100,11 +102,16 @@ func (c *ClaudeCode) readBridgeLoop(sess *userSession) {
 
 		switch env.Type {
 		case protocol.TypeToolCall:
-			select {
-			case sess.replyCh <- env:
-			default:
-				logger.Warnf(c.ctx, "reply channel full for user=%s, dropping", sess.userID)
+			tc, err := protocol.DecodePayload[protocol.ToolCall](env)
+			if err != nil {
+				logger.Warnf(c.ctx, "decode tool call: %v", err)
+				continue
 			}
+			resp := &agent.Response{Text: tc.Text}
+			if tc.FilePath != "" {
+				resp.Files = []string{tc.FilePath}
+			}
+			sess.pushResponse(resp)
 
 		case protocol.TypePermissionRequest:
 			perm, err := protocol.DecodePayload[protocol.Permission](env)
@@ -112,21 +119,28 @@ func (c *ClaudeCode) readBridgeLoop(sess *userSession) {
 				logger.Warnf(c.ctx, "decode permission request: %v", err)
 				continue
 			}
-			// Capture the actual runtime terminal prompt which has richer content
-			// (numbered options like "1. Yes  2. Yes, allow during session  3. No").
 			if pane, captureErr := c.rt.CaptureOutput(c.ctx, sess.proc); captureErr == nil && pane != "" {
 				perm.Prompt = runtime.CompactInteractivePrompt(pane, claudeLineFilter)
 			}
 			sess.permission.Set(perm)
-			select {
-			case sess.permCh <- perm:
-			default:
-				logger.Warnf(c.ctx, "permission channel full for user=%s, dropping notification", sess.userID)
-			}
+			sess.pushResponse(permissionResponse(perm))
 
 		default:
 			logger.Debugf(c.ctx, "unknown envelope from bridge: %s", env.Type)
 		}
+	}
+}
+
+func (c *ClaudeCode) watchOutput(ctx context.Context, sess *userSession) {
+	logger := log.WithFunc("claude.watchOutput")
+	if err := c.rt.Watch(ctx, sess.proc, func(content string) {
+		prompt := runtime.CompactInteractivePrompt(content, claudeLineFilter)
+		if prompt != "" && prompt != sess.prompt.Get() {
+			sess.prompt.Set(prompt)
+			sess.pushResponse(interactiveResponse(prompt))
+		}
+	}); err != nil && ctx.Err() == nil {
+		logger.Warnf(ctx, "watch output ended for user=%s: %v", sess.userID, err)
 	}
 }
 
@@ -141,61 +155,4 @@ func (c *ClaudeCode) sendChannelEvent(sess *userSession, userID string, msg agen
 	}
 	logger.Debugf(c.ctx, "sent channel event to user=%s, text=%d bytes", userID, len(msg.Text))
 	return nil
-}
-
-func (c *ClaudeCode) waitForReply(ctx context.Context, sess *userSession) (*agent.Response, error) {
-	return c.waitForReplyWithTimeout(ctx, sess, replyTimeout, true)
-}
-
-func (c *ClaudeCode) waitForReplyWithTimeout(ctx context.Context, sess *userSession, timeout time.Duration, timeoutIsError bool) (*agent.Response, error) {
-	logger := log.WithFunc("claude.waitForReply")
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	ticker := time.NewTicker(promptPollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case env := <-sess.replyCh:
-			if env == nil {
-				return nil, fmt.Errorf("session closed")
-			}
-			tc, err := protocol.DecodePayload[protocol.ToolCall](env)
-			if err != nil {
-				return nil, fmt.Errorf("decode reply: %w", err)
-			}
-			resp := &agent.Response{Text: tc.Text}
-			if tc.FilePath != "" {
-				resp.Files = []string{tc.FilePath}
-			}
-			return resp, nil
-		case perm := <-sess.permCh:
-			if perm == nil {
-				return nil, fmt.Errorf("session closed")
-			}
-			return permissionResponse(perm), nil
-		case <-ticker.C:
-			prompt, err := runtime.CaptureInteractivePrompt(ctx, c.rt, sess.proc, claudeLineFilter)
-			if err != nil {
-				logger.Debugf(ctx, "capture interactive prompt for user=%s: %v", sess.userID, err)
-				continue
-			}
-			if prompt != "" {
-				sess.prompt.Set(prompt)
-				return interactiveResponse(prompt), nil
-			}
-		case <-timer.C:
-			prompt, err := runtime.CaptureInteractivePrompt(ctx, c.rt, sess.proc, claudeLineFilter)
-			if err == nil && prompt != "" {
-				sess.prompt.Set(prompt)
-				return interactiveResponse(prompt), nil
-			}
-			if timeoutIsError {
-				return nil, fmt.Errorf("reply timeout after %s", timeout)
-			}
-			return &agent.Response{Text: "已发送选择，Claude 仍在处理中。"}, nil
-		}
-	}
 }

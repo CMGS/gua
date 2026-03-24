@@ -3,11 +3,17 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
+	"unicode/utf8"
 
 	"github.com/CMGS/gua/runtime"
 )
+
+const watchWindowSize = 80 * 40 // ~1 terminal screen worth of characters
 
 // Tmux implements runtime.Runtime using tmux sessions.
 type Tmux struct {
@@ -70,11 +76,80 @@ func (t *Tmux) Respawn(ctx context.Context, proc *runtime.Process, command strin
 	if proc == nil || proc.PaneID == "" {
 		return fmt.Errorf("no pane to respawn in")
 	}
-	// Send C-c to interrupt, wait briefly, then send the new command.
 	_ = t.SendInput(ctx, proc, "C-c")
-	// respawn-pane kills the current process and runs a new command in the same pane.
 	_, err := t.exec(ctx, "respawn-pane", "-k", "-t", proc.PaneID, command)
 	return err
+}
+
+// Watch streams process output via tmux pipe-pane through a FIFO.
+// The handler receives a sliding window of the latest ~3200 characters
+// each time new output arrives. Blocks until ctx is canceled.
+func (t *Tmux) Watch(ctx context.Context, proc *runtime.Process, handler runtime.OutputHandler) error {
+	if proc == nil || proc.PaneID == "" {
+		return nil
+	}
+
+	fifoPath := filepath.Join(os.TempDir(), fmt.Sprintf("gua-watch-%s.fifo", strings.ReplaceAll(proc.PaneID, "%", "")))
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("mkfifo: %w", err)
+	}
+	defer os.Remove(fifoPath)
+
+	if _, err := t.exec(ctx, "pipe-pane", "-t", proc.PaneID, "cat > '"+fifoPath+"'"); err != nil {
+		return fmt.Errorf("pipe-pane: %w", err)
+	}
+	defer t.exec(context.Background(), "pipe-pane", "-t", proc.PaneID, "") //nolint:errcheck
+
+	// Open FIFO in blocking mode — Read blocks until data arrives.
+	// The ctx-cancel goroutine closes f to unblock.
+	openCh := make(chan *os.File, 1)
+	go func() {
+		f, err := os.Open(fifoPath) //nolint:gosec
+		if err == nil {
+			openCh <- f
+		} else {
+			openCh <- nil
+		}
+	}()
+
+	var f *os.File
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case f = <-openCh:
+		if f == nil {
+			return fmt.Errorf("open fifo: failed")
+		}
+	}
+
+	go func() {
+		<-ctx.Done()
+		f.Close()
+	}()
+
+	window := make([]byte, 0, watchWindowSize*2)
+	buf := make([]byte, 4096)
+
+	for {
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			window = append(window, buf[:n]...)
+			if len(window) > watchWindowSize {
+				window = window[len(window)-watchWindowSize:]
+				// Skip to valid UTF-8 boundary to avoid splitting multi-byte chars.
+				for len(window) > 0 && !utf8.RuneStart(window[0]) {
+					window = window[1:]
+				}
+			}
+			handler(string(window))
+		}
+		if readErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return readErr
+		}
+	}
 }
 
 // Close is a no-op for tmux — the session persists for reuse.
