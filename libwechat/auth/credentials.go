@@ -15,9 +15,3 @@ func SaveCredentials(path string, creds *types.Credentials) error {
 func LoadCredentials(path string) (*types.Credentials, error) {
 	return utils.ReadJSONFile[types.Credentials](path)
 }
-
-// NormalizeAccountID replaces @, ., and : with - for filesystem safety.
-// Delegates to utils.NormalizeID.
-func NormalizeAccountID(raw string) string {
-	return utils.NormalizeID(raw)
-}

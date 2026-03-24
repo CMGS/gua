@@ -20,6 +20,7 @@ import (
 	"github.com/CMGS/gua/config"
 	"github.com/CMGS/gua/libwechat/auth"
 	"github.com/CMGS/gua/libwechat/types"
+	runtmux "github.com/CMGS/gua/runtime/tmux"
 	"github.com/CMGS/gua/server"
 	"github.com/CMGS/gua/utils"
 )
@@ -65,11 +66,11 @@ func initLogging(ctx context.Context) {
 }
 
 func printUsage(w *os.File) {
-	fmt.Fprintln(w, "Usage: gua <command>")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Commands:")
-	fmt.Fprintln(w, "  setup    Setup backend authentication")
-	fmt.Fprintln(w, "  start    Start the server")
+	_, _ = fmt.Fprintln(w, "Usage: gua <command>")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Commands:")
+	_, _ = fmt.Fprintln(w, "  setup    Setup backend authentication")
+	_, _ = fmt.Fprintln(w, "  start    Start the server")
 }
 
 func cmdSetup(ctx context.Context, args []string) {
@@ -77,7 +78,7 @@ func cmdSetup(ctx context.Context, args []string) {
 
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	backendName := fs.String("backend", defaultBackend, "backend to setup")
-	fs.Parse(args) //nolint:errcheck
+	_ = fs.Parse(args)
 
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -86,19 +87,18 @@ func cmdSetup(ctx context.Context, args []string) {
 	case "wechat":
 		w := wechat.New(nil)
 		if err := w.Setup(ctx); err != nil {
-			logger.Errorf(ctx, err, "%s", "setup failed")
+			logger.Errorf(ctx, err, "setup failed")
 			os.Exit(1)
 		}
 		creds := w.Creds()
-		normalizedID := utils.NormalizeID(creds.ILinkBotID)
-		credPath := filepath.Join(accountsDir(*backendName), normalizedID+".json")
+		credPath := filepath.Join(accountsDir(*backendName), utils.NormalizeID(creds.ILinkBotID)+".json")
 		if err := auth.SaveCredentials(credPath, creds); err != nil {
-			logger.Errorf(ctx, err, "%s", "save credentials")
+			logger.Errorf(ctx, err, "save credentials")
 			os.Exit(1)
 		}
 		logger.Infof(ctx, "credentials saved to %s", credPath)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown backend: %s\n", *backendName)
+		logger.Errorf(ctx, nil, "unknown backend: %s", *backendName)
 		os.Exit(1)
 	}
 }
@@ -113,28 +113,29 @@ func cmdStart(ctx context.Context, args []string) {
 	model := fs.String("model", defaultModel, "model name")
 	claudeCmd := fs.String("claude-cmd", defaultClaudeCmd, "path to claude CLI binary")
 	bridgeBin := fs.String("bridge-bin", "", "path to bridge binary (required)")
-	fs.Parse(args) //nolint:errcheck
+	tmuxName := fs.String("tmux-name", "gua", "tmux session name for runtime")
+	_ = fs.Parse(args)
 
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	if *workDir == "" {
-		fmt.Fprintln(os.Stderr, "--work-dir is required")
+		logger.Errorf(ctx, nil, "--work-dir is required")
 		os.Exit(1)
 	}
 	if *bridgeBin == "" {
-		fmt.Fprintln(os.Stderr, "--bridge-bin is required")
+		logger.Errorf(ctx, nil, "--bridge-bin is required")
 		os.Exit(1)
 	}
 
 	dir := accountsDir(*backendName)
-	allCreds, err := loadAllAccounts(dir)
+	allCreds, err := loadAllAccounts(ctx, dir)
 	if err != nil {
 		logger.Errorf(ctx, err, "load accounts from %s", dir)
 		os.Exit(1)
 	}
 	if len(allCreds) == 0 {
-		logger.Errorf(ctx, fmt.Errorf("no accounts found"), "no account files in %s, run setup first", dir)
+		logger.Errorf(ctx, nil, "no accounts in %s, run setup first", dir)
 		os.Exit(1)
 	}
 
@@ -145,7 +146,9 @@ func cmdStart(ctx context.Context, args []string) {
 			defer wg.Done()
 			botID := creds.ILinkBotID
 			logger.Infof(ctx, "starting account %s: backend=%s agent=%s", botID, *backendName, *agentName)
+			rt := runtmux.New(*tmuxName)
 			runAccount(ctx, creds, *backendName, *agentName,
+				claude.WithRuntime(rt),
 				claude.WithClaudeCmd(*claudeCmd),
 				claude.WithBridgeBin(*bridgeBin),
 				claude.WithModel(*model),
@@ -190,7 +193,7 @@ func runAccount(ctx context.Context, creds *types.Credentials, backendName, agen
 	}
 }
 
-func loadAllAccounts(dir string) ([]*types.Credentials, error) {
+func loadAllAccounts(ctx context.Context, dir string) ([]*types.Credentials, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read accounts dir %s: %w", dir, err)
@@ -204,7 +207,7 @@ func loadAllAccounts(dir string) ([]*types.Credentials, error) {
 		path := filepath.Join(dir, entry.Name())
 		creds, err := auth.LoadCredentials(path)
 		if err != nil {
-			log.WithFunc("cmd.loadAllAccounts").Warnf(context.TODO(), "skip invalid account file %s: %v", path, err)
+			log.WithFunc("cmd.loadAllAccounts").Warnf(ctx, "skip invalid account file %s: %v", path, err)
 			continue
 		}
 		accounts = append(accounts, creds)

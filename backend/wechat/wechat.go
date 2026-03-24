@@ -19,6 +19,8 @@ import (
 	"github.com/CMGS/gua/utils"
 )
 
+var wechatPresenter backend.Presenter = &presenter{}
+
 // WeChat implements backend.Backend for the WeChat iLink platform.
 type WeChat struct {
 	bot   *libwechat.Bot
@@ -67,7 +69,7 @@ func (w *WeChat) Setup(ctx context.Context) error {
 	return nil
 }
 
-// Start begins receiving messages. Blocks until ctx is cancelled.
+// Start begins receiving messages. Blocks until ctx is canceled.
 func (w *WeChat) Start(ctx context.Context, handler backend.InboundHandler) error {
 	logger := log.WithFunc("wechat.Start")
 
@@ -110,8 +112,6 @@ func (w *WeChat) Start(ctx context.Context, handler backend.InboundHandler) erro
 
 // Send sends a message to a user on the platform.
 func (w *WeChat) Send(ctx context.Context, msg backend.OutboundMessage) error {
-	logger := log.WithFunc("wechat.Send")
-
 	if msg.FilePath != "" {
 		mimeType := utils.DetectMIMEType(msg.FilePath)
 		// Only raster images are supported by WeChat CDN; SVG, WebP etc. go as file attachments.
@@ -119,18 +119,15 @@ func (w *WeChat) Send(ctx context.Context, msg backend.OutboundMessage) error {
 		switch {
 		case isRaster:
 			if err := w.bot.SendImageFile(ctx, msg.RecipientID, msg.FilePath, msg.ReplyToken); err != nil {
-				logger.Warnf(ctx, "send image to %s: %v", msg.RecipientID, err)
 				return err
 			}
 		case strings.HasPrefix(mimeType, "video/"):
 			if err := w.bot.SendVideoFile(ctx, msg.RecipientID, msg.FilePath, msg.ReplyToken); err != nil {
-				logger.Warnf(ctx, "send video to %s: %v", msg.RecipientID, err)
 				return err
 			}
 		default:
 			fileName := utils.CleanFileName(filepath.Base(msg.FilePath))
 			if err := w.bot.SendFile(ctx, msg.RecipientID, msg.FilePath, fileName, msg.ReplyToken); err != nil {
-				logger.Warnf(ctx, "send file to %s: %v", msg.RecipientID, err)
 				return err
 			}
 		}
@@ -138,7 +135,6 @@ func (w *WeChat) Send(ctx context.Context, msg backend.OutboundMessage) error {
 
 	if msg.Text != "" {
 		if err := w.bot.SendText(ctx, msg.RecipientID, msg.Text, msg.ReplyToken); err != nil {
-			logger.Warnf(ctx, "send text to %s: %v", msg.RecipientID, err)
 			return err
 		}
 	}
@@ -156,7 +152,7 @@ func (w *WeChat) StartTyping(ctx context.Context, userID, replyToken string) (st
 
 // Presenter returns the WeChat presenter for rendering responses.
 func (w *WeChat) Presenter() backend.Presenter {
-	return &presenter{}
+	return wechatPresenter
 }
 
 // Creds returns the stored credentials (for persistence by caller).

@@ -13,8 +13,8 @@ import (
 
 	"github.com/projecteru2/core/log"
 
-	"github.com/CMGS/gua/mcpserver"
-	"github.com/CMGS/gua/protocol"
+	"github.com/CMGS/gua/agent/claude/mcpserver"
+	"github.com/CMGS/gua/agent/claude/protocol"
 )
 
 const defaultInstructions = `Messages arrive as <channel source="gua" sender="..." sender_id="...">.
@@ -54,7 +54,7 @@ func main() {
 	defer cancel()
 
 	if *socketPath == "" || *userID == "" {
-		fmt.Fprintln(os.Stderr, "usage: bridge --socket /path/to/socket --user userID")
+		logger.Errorf(ctx, nil, "usage: bridge --socket /path/to/socket --user userID")
 		os.Exit(1)
 	}
 
@@ -64,7 +64,7 @@ func main() {
 	}
 
 	if err := run(ctx, *socketPath, *userID, instr); err != nil {
-		logger.Errorf(ctx, err, "%s", "bridge exited")
+		logger.Errorf(ctx, err, "bridge exited")
 		os.Exit(1)
 	}
 }
@@ -80,11 +80,11 @@ func run(ctx context.Context, socketPath, userID, instructions string) error {
 	if err != nil {
 		return fmt.Errorf("connect to dispatcher: %w", err)
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck
 
 	// Send Register envelope.
-	if err := protocol.WriteEnvelope(conn, protocol.TypeRegister, protocol.Register{UserID: userID}); err != nil {
-		return fmt.Errorf("send register: %w", err)
+	if writeErr := protocol.WriteEnvelope(conn, protocol.TypeRegister, protocol.Register{UserID: userID}); writeErr != nil {
+		return fmt.Errorf("send register: %w", writeErr)
 	}
 
 	reader := bufio.NewReader(conn)
