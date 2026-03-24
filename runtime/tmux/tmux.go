@@ -2,12 +2,14 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"github.com/CMGS/gua/runtime"
@@ -100,26 +102,10 @@ func (t *Tmux) Watch(ctx context.Context, proc *runtime.Process, handler runtime
 	}
 	defer t.exec(context.Background(), "pipe-pane", "-t", proc.PaneID, "") //nolint:errcheck
 
-	// Open FIFO in blocking mode — Read blocks until data arrives.
-	// The ctx-cancel goroutine closes f to unblock.
-	openCh := make(chan *os.File, 1)
-	go func() {
-		f, err := os.Open(fifoPath) //nolint:gosec
-		if err == nil {
-			openCh <- f
-		} else {
-			openCh <- nil
-		}
-	}()
-
-	var f *os.File
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case f = <-openCh:
-		if f == nil {
-			return fmt.Errorf("open fifo: failed")
-		}
+	// Open FIFO non-blocking to avoid goroutine leak if writer hasn't connected yet.
+	f, err := os.OpenFile(fifoPath, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec
+	if err != nil {
+		return fmt.Errorf("open fifo: %w", err)
 	}
 
 	go func() {
@@ -136,7 +122,6 @@ func (t *Tmux) Watch(ctx context.Context, proc *runtime.Process, handler runtime
 			window = append(window, buf[:n]...)
 			if len(window) > watchWindowSize {
 				window = window[len(window)-watchWindowSize:]
-				// Skip to valid UTF-8 boundary to avoid splitting multi-byte chars.
 				for len(window) > 0 && !utf8.RuneStart(window[0]) {
 					window = window[1:]
 				}
@@ -144,6 +129,10 @@ func (t *Tmux) Watch(ctx context.Context, proc *runtime.Process, handler runtime
 			handler(string(window))
 		}
 		if readErr != nil {
+			if errors.Is(readErr, syscall.EAGAIN) {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
