@@ -172,8 +172,9 @@ func runAccount(ctx context.Context, creds *types.Credentials, backendName, agen
 		return
 	}
 
-	claudeMD := config.MergedMD(backendName, b.Presenter().MediaInstructions())
-	opts = append(opts, claude.WithClaudeMD(claudeMD))
+	// Init prompt = base (security) + agent (claude) + backend (wechat) + media instructions
+	initPrompt := config.BaseMD + "\n\n" + claude.PromptMD + "\n\n" + wechat.PromptMD + "\n\n" + b.Presenter().MediaInstructions()
+	opts = append(opts, claude.WithClaudeMD(initPrompt))
 
 	switch agentName {
 	case "claude":
