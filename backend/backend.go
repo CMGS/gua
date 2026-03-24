@@ -41,17 +41,27 @@ type InboundHandler func(ctx context.Context, msg InboundMessage)
 
 // Backend is a messaging platform (WeChat, Discord, Telegram, etc.).
 type Backend interface {
-	// Name returns the backend identifier (e.g. "wechat", "discord").
 	Name() string
-	// Setup performs initial authentication (e.g. QR code login).
 	Setup(ctx context.Context) error
-	// Start begins receiving messages. Calls handler for each inbound message.
-	// Blocks until ctx is cancelled.
 	Start(ctx context.Context, handler InboundHandler) error
-	// Send sends a message to a user on the platform.
 	Send(ctx context.Context, msg OutboundMessage) error
-	// StartTyping shows a typing indicator to the user.
-	// Returns a stop function that cancels the indicator.
-	// Backends that don't support typing may return a no-op stop.
 	StartTyping(ctx context.Context, userID, replyToken string) (stop func())
+	Presenter() Presenter
+}
+
+// Presenter renders structured responses for a specific platform.
+// The agent.Response is passed as individual fields to avoid import cycles.
+type Presenter interface {
+	// FormatPrompt renders a prompt for the user.
+	// promptText is the raw prompt, options are available choices,
+	// toolName/description are for permission prompts.
+	FormatPrompt(promptText string, options []string, toolName, description string) string
+	// FormatError renders an error for the user.
+	FormatError(err error) string
+	// FormatMediaAnnotation returns the text annotation for a media file.
+	FormatMediaAnnotation(mf MediaFile) string
+	// MediaInstructions returns platform-specific output rules for the Agent.
+	MediaInstructions() string
+	// FormatText processes agent reply text before sending to the user.
+	FormatText(text string) string
 }
