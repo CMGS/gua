@@ -16,17 +16,17 @@ const (
 	PromptInteractive // terminal interactive prompt (numbered options, y/n)
 )
 
-// Message is sent to the agent for processing.
-type Message struct {
-	Text       string            // formatted text (includes media path annotations)
-	MediaFiles []types.MediaFile // attached media files (local paths)
-}
-
 // PermissionInfo carries details about a permission request from the agent.
 type PermissionInfo struct {
 	ToolName     string
 	Description  string
 	InputPreview string
+}
+
+// Message is sent to the agent for processing.
+type Message struct {
+	Text       string            // formatted text (includes media path annotations)
+	MediaFiles []types.MediaFile // attached media files (local paths)
 }
 
 // Response is the agent's reply.
@@ -43,7 +43,8 @@ type Response struct {
 type Agent interface {
 	Name() string
 	Chat(ctx context.Context, userID string, msg Message) (*Response, error)
-	Control(ctx context.Context, userID, input string) (resp *Response, handled bool, err error)
+	Control(ctx context.Context, userID string, action types.Action) (*Response, bool, error)
+	Restart(ctx context.Context, userID string, flags map[string]string) (restarted bool, err error)
 	Close(userID string) error
 	CloseAll() error
 }

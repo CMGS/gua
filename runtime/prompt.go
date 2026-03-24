@@ -91,37 +91,6 @@ func ExtractOptions(prompt string) []string {
 	return opts
 }
 
-// ControlKeys maps user control input (/1, /yes, /no) to terminal key sequences.
-func ControlKeys(prompt, input string) ([]string, bool) {
-	cmd := NormalizeControl(input)
-	yn := hasYNIndicator(prompt)
-
-	switch cmd {
-	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		return []string{cmd, "Enter"}, true
-	case "yes", "y", "enter":
-		if yn {
-			return []string{"y", "Enter"}, true
-		}
-		return []string{"Enter"}, true
-	case "no", "n", "cancel":
-		if strings.Contains(prompt, "Esc to cancel") {
-			return []string{"Escape"}, true
-		}
-		if yn {
-			return []string{"n", "Enter"}, true
-		}
-		return []string{"C-c"}, true
-	default:
-		return nil, false
-	}
-}
-
-// NormalizeControl strips "/" prefix and lowercases user input.
-func NormalizeControl(input string) string {
-	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(input)), "/")
-}
-
 // ShellQuote returns a shell-safe single-quoted string.
 func ShellQuote(s string) string {
 	if s == "" {

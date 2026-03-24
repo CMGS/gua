@@ -15,21 +15,20 @@ import (
 	coretypes "github.com/projecteru2/core/types"
 
 	"github.com/CMGS/gua/agent/claude"
-	"github.com/CMGS/gua/backend"
-	"github.com/CMGS/gua/backend/wechat"
+	"github.com/CMGS/gua/channel"
+	"github.com/CMGS/gua/channel/wechat"
 	"github.com/CMGS/gua/config"
-	"github.com/CMGS/gua/libwechat/auth"
-	"github.com/CMGS/gua/libwechat/types"
+	"github.com/CMGS/gua/libc/wechat/auth"
+	"github.com/CMGS/gua/libc/wechat/types"
 	runtmux "github.com/CMGS/gua/runtime/tmux"
 	"github.com/CMGS/gua/server"
 	"github.com/CMGS/gua/utils"
 )
 
 const (
-	defaultBackend   = "wechat"
-	defaultAgent     = "claude"
-	defaultModel     = "sonnet"
-	defaultClaudeCmd = "claude"
+	defaultBackend = "wechat"
+	defaultAgent   = "claude"
+	defaultModel   = "sonnet"
 )
 
 func main() {
@@ -112,7 +111,7 @@ func cmdStart(ctx context.Context, args []string) int {
 	agentName := fs.String("agent", defaultAgent, "agent name")
 	workDir := fs.String("work-dir", "", "working directory for agent sessions (required)")
 	model := fs.String("model", defaultModel, "model name")
-	claudeCmd := fs.String("claude-cmd", defaultClaudeCmd, "path to claude CLI binary")
+	claudeCmd := fs.String("claude-cmd", "claude", "path to claude CLI binary")
 	bridgeBin := fs.String("bridge-bin", "", "path to bridge binary (required)")
 	tmuxName := fs.String("tmux-name", "gua", "tmux session name for runtime")
 	_ = fs.Parse(args)
@@ -165,7 +164,7 @@ func runAccount(ctx context.Context, creds *types.Credentials, backendName, agen
 	logger := log.WithFunc("cmd.runAccount")
 	botID := creds.ILinkBotID
 
-	var b backend.Backend
+	var b channel.Channel
 	switch backendName {
 	case "wechat":
 		b = wechat.New(creds)

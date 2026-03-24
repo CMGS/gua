@@ -65,6 +65,18 @@ func (t *Tmux) Kill(ctx context.Context, proc *runtime.Process) error {
 	return err
 }
 
+// Respawn kills the running process in the pane and starts a new command.
+func (t *Tmux) Respawn(ctx context.Context, proc *runtime.Process, command string) error {
+	if proc == nil || proc.PaneID == "" {
+		return fmt.Errorf("no pane to respawn in")
+	}
+	// Send C-c to interrupt, wait briefly, then send the new command.
+	_ = t.SendInput(ctx, proc, "C-c")
+	// respawn-pane kills the current process and runs a new command in the same pane.
+	_, err := t.exec(ctx, "respawn-pane", "-k", "-t", proc.PaneID, command)
+	return err
+}
+
 // Close is a no-op for tmux — the session persists for reuse.
 func (t *Tmux) Close() error {
 	return nil

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/CMGS/gua/agent"
-	"github.com/CMGS/gua/backend"
+	"github.com/CMGS/gua/channel"
 )
 
 var (
@@ -16,7 +16,7 @@ var (
 
 // FormatInbound converts an InboundMessage into an agent Message,
 // using the presenter to annotate media files in a platform-specific way.
-func FormatInbound(msg backend.InboundMessage, p backend.Presenter) agent.Message {
+func FormatInbound(msg channel.InboundMessage, p channel.Presenter) agent.Message {
 	var b strings.Builder
 	b.WriteString(msg.Text)
 

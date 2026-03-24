@@ -19,6 +19,9 @@ type Runtime interface {
 	SendInput(ctx context.Context, proc *Process, keys ...string) error
 	// Kill terminates a process.
 	Kill(ctx context.Context, proc *Process) error
+	// Respawn kills the running process in the same pane and starts a new command.
+	// The Process handles (window/pane IDs) remain the same.
+	Respawn(ctx context.Context, proc *Process, command string) error
 	// Close cleans up all runtime resources.
 	Close() error
 }
