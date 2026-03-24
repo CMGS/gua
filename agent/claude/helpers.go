@@ -11,13 +11,6 @@ import (
 	"github.com/CMGS/gua/types"
 )
 
-func (c *ClaudeCode) getSession(userID string) (*userSession, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	sess, ok := c.sessions[userID]
-	return sess, ok
-}
-
 func (c *ClaudeCode) getUserFlag(userID, key string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

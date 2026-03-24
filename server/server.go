@@ -153,7 +153,8 @@ func (s *Server) getReplyToken(userID string) string {
 	if !ok {
 		return ""
 	}
-	return v.(string)
+	token, _ := v.(string)
+	return token
 }
 
 func (s *Server) cmdYolo(ctx context.Context, msg channel.InboundMessage) *agent.Response {

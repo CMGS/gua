@@ -85,7 +85,7 @@ func (c *ClaudeCode) handlePermissionControl(_ context.Context, sess *userSessio
 	sess.permission.Clear()
 
 	if behavior == behaviorDeny {
-		sess.pushResponse(&agent.Response{Text: "已拒绝该操作。"})
+		sess.pushResponse(&agent.Response{Text: "denied"})
 	}
 	return nil
 }
@@ -115,7 +115,7 @@ func (c *ClaudeCode) handleElicitationControl(_ context.Context, sess *userSessi
 	sess.elicitation.Clear()
 
 	if elicitAction == elicitDecline {
-		sess.pushResponse(&agent.Response{Text: "已拒绝该请求。"})
+		sess.pushResponse(&agent.Response{Text: "declined"})
 	}
 	return nil
 }

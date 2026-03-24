@@ -122,6 +122,13 @@ func WithClaudeMD(content string) Option {
 // Name returns the agent identifier.
 func (c *ClaudeCode) Name() string { return "claude" }
 
+func (c *ClaudeCode) getSession(userID string) (*userSession, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	sess, ok := c.sessions[userID]
+	return sess, ok
+}
+
 // Send sends a message to the user's Claude Code session. Non-blocking.
 // Responses arrive asynchronously via the channel returned by Subscribe.
 func (c *ClaudeCode) Send(ctx context.Context, userID string, msg agent.Message) error {
