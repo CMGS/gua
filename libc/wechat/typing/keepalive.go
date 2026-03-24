@@ -64,11 +64,17 @@ func (k *KeepAlive) sendTyping(ctx context.Context, userID, contextToken string,
 
 	ticket, err := k.cache.GetTicket(ctx, userID, contextToken)
 	if err != nil {
+		if ctx.Err() != nil {
+			return // context canceled, expected during stop
+		}
 		logger.Warnf(ctx, "failed to get ticket for user %s: %v", userID, err)
 		return
 	}
 
 	if err := k.client.SendTyping(ctx, userID, ticket, status); err != nil {
+		if ctx.Err() != nil {
+			return // context canceled, expected during stop
+		}
 		logger.Warnf(ctx, "failed to send status %d for user %s: %v", status, userID, err)
 	}
 }
