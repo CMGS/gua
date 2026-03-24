@@ -135,7 +135,16 @@ func (c *ClaudeCode) Chat(ctx context.Context, userID string, msg agent.Message)
 	}
 
 	if perm := sess.getPendingPermission(); perm != nil {
-		return &agent.Response{Text: formatPermissionPrompt(perm)}, nil
+		return &agent.Response{
+			Prompt:     agent.PromptPermission,
+			PromptText: perm.TmuxPrompt,
+			Options:    extractOptions(perm.TmuxPrompt),
+			Permission: &agent.PermissionInfo{
+				ToolName:     perm.ToolName,
+				Description:  perm.Description,
+				InputPreview: perm.InputPreview,
+			},
+		}, nil
 	}
 
 	if err := c.sendChannelEvent(sess, userID, msg); err != nil {
@@ -213,7 +222,16 @@ func (c *ClaudeCode) waitForReplyWithTimeout(ctx context.Context, sess *userSess
 			if perm == nil {
 				return nil, fmt.Errorf("session closed")
 			}
-			return &agent.Response{Text: formatPermissionPrompt(perm)}, nil
+			return &agent.Response{
+				Prompt:     agent.PromptPermission,
+				PromptText: perm.TmuxPrompt,
+				Options:    extractOptions(perm.TmuxPrompt),
+				Permission: &agent.PermissionInfo{
+					ToolName:     perm.ToolName,
+					Description:  perm.Description,
+					InputPreview: perm.InputPreview,
+				},
+			}, nil
 		case <-ticker.C:
 			prompt, err := c.captureInteractivePrompt(ctx, sess.paneID)
 			if err != nil {
@@ -222,13 +240,21 @@ func (c *ClaudeCode) waitForReplyWithTimeout(ctx context.Context, sess *userSess
 			}
 			if prompt != "" {
 				sess.setPendingTmuxPrompt(prompt)
-				return &agent.Response{Text: c.formatTmuxPrompt(prompt)}, nil
+				return &agent.Response{
+					Prompt:     agent.PromptInteractive,
+					PromptText: prompt,
+					Options:    extractOptions(prompt),
+				}, nil
 			}
 		case <-timer.C:
 			prompt, err := c.captureInteractivePrompt(ctx, sess.paneID)
 			if err == nil && prompt != "" {
 				sess.setPendingTmuxPrompt(prompt)
-				return &agent.Response{Text: c.formatTmuxPrompt(prompt)}, nil
+				return &agent.Response{
+					Prompt:     agent.PromptInteractive,
+					PromptText: prompt,
+					Options:    extractOptions(prompt),
+				}, nil
 			}
 			if timeoutIsError {
 				return nil, fmt.Errorf("reply timeout after %s", timeout)
@@ -468,7 +494,7 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 }
 
 func (c *ClaudeCode) startTmuxSession(ctx context.Context, workDir, windowName string) (string, string, error) {
-	command := c.tmuxClaudeCommand()
+	command := c.tmuxClaudeCommand(workDir)
 	format := "#{window_id} #{pane_id}"
 
 	if _, err := c.tmux(ctx, "has-session", "-t", c.tmuxName); err != nil {
@@ -486,7 +512,7 @@ func (c *ClaudeCode) startTmuxSession(ctx context.Context, workDir, windowName s
 	return parseTmuxIDs(out)
 }
 
-func (c *ClaudeCode) tmuxClaudeCommand() string {
+func (c *ClaudeCode) tmuxClaudeCommand(workDir string) string {
 	shellPath := os.Getenv("SHELL")
 	if shellPath == "" {
 		shellPath = "/bin/bash"
@@ -496,8 +522,10 @@ func (c *ClaudeCode) tmuxClaudeCommand() string {
 	if c.model != "" {
 		args = append(args, shellQuote("--model"), shellQuote(c.model))
 	}
-	// Resume the previous conversation if one exists in this workdir.
-	args = append(args, shellQuote("--continue"))
+	// Resume previous conversation only if one exists.
+	if hasExistingSession(workDir) {
+		args = append(args, shellQuote("--continue"))
+	}
 	// Pre-approve common tools to reduce permission prompts.
 	for _, tool := range []string{"Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "mcp__gua__gua_reply"} {
 		args = append(args, shellQuote("--allowedTools"), shellQuote(tool))
@@ -553,9 +581,14 @@ func (c *ClaudeCode) sendTmuxKeys(ctx context.Context, paneID string, keys ...st
 }
 
 func (c *ClaudeCode) handleTmuxControl(ctx context.Context, sess *userSession, input string) (*agent.Response, error) {
-	keyset, ok := tmuxControlKeys(sess.getPendingTmuxPrompt(), input)
+	prompt := sess.getPendingTmuxPrompt()
+	keyset, ok := tmuxControlKeys(prompt, input)
 	if !ok {
-		return &agent.Response{Text: c.formatTmuxPrompt(sess.getPendingTmuxPrompt())}, nil
+		return &agent.Response{
+			Prompt:     agent.PromptInteractive,
+			PromptText: prompt,
+			Options:    extractOptions(prompt),
+		}, nil
 	}
 	if err := c.sendTmuxKeys(ctx, sess.paneID, keyset...); err != nil {
 		return nil, err
@@ -568,7 +601,16 @@ func (c *ClaudeCode) handleTmuxControl(ctx context.Context, sess *userSession, i
 func (c *ClaudeCode) handlePermissionControl(ctx context.Context, sess *userSession, input string, perm *protocol.Permission) (*agent.Response, error) {
 	behavior, ok := permissionBehavior(input)
 	if !ok {
-		return &agent.Response{Text: formatPermissionPrompt(perm)}, nil
+		return &agent.Response{
+			Prompt:     agent.PromptPermission,
+			PromptText: perm.TmuxPrompt,
+			Options:    extractOptions(perm.TmuxPrompt),
+			Permission: &agent.PermissionInfo{
+				ToolName:     perm.ToolName,
+				Description:  perm.Description,
+				InputPreview: perm.InputPreview,
+			},
+		}, nil
 	}
 	reply := protocol.Permission{
 		RequestID: perm.RequestID,
@@ -649,40 +691,23 @@ func normalizeControl(input string) string {
 	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(input)), "/")
 }
 
-func formatPermissionPrompt(perm *protocol.Permission) string {
-	if perm == nil {
-		return "Claude 正在等待确认。回复 /yes 或 /no。"
-	}
+// extractOptions parses numbered options ("1. ...", "2. ...") or y/n
+// indicators from a prompt string and returns them as a slice.
+func extractOptions(prompt string) []string {
+	var opts []string
+	lower := strings.ToLower(prompt)
+	hasYN := strings.Contains(lower, "y/n") || strings.Contains(lower, "[y/n]")
 
-	// Prefer the real tmux terminal content which shows numbered options.
-	if perm.TmuxPrompt != "" {
-		options := promptOptionHints(perm.TmuxPrompt)
-		if options == "" {
-			options = "/yes"
+	for _, raw := range strings.Split(prompt, "\n") {
+		if n := optionLineNumber(strings.TrimSpace(raw)); n != "" {
+			opts = append(opts, n)
 		}
-		return fmt.Sprintf("Claude 需要确认:\n\n%s\n\n回复 %s 选择，/yes 允许，/no 拒绝。", perm.TmuxPrompt, options)
 	}
 
-	// Fallback: MCP permission fields only.
-	var b strings.Builder
-	fmt.Fprintf(&b, "Claude 需要确认 %s", perm.ToolName)
-	if perm.Description != "" {
-		fmt.Fprintf(&b, ": %s", perm.Description)
+	if len(opts) == 0 && hasYN {
+		opts = []string{"yes", "no"}
 	}
-	b.WriteString("\n回复 /yes 允许，或 /no 拒绝。")
-	return b.String()
-}
-
-func (c *ClaudeCode) formatTmuxPrompt(prompt string) string {
-	text := compactInteractivePrompt(prompt)
-	if text == "" {
-		text = "Claude 终端正在等待你的确认。"
-	}
-	options := promptOptionHints(text)
-	if options == "" {
-		options = "/yes"
-	}
-	return fmt.Sprintf("Claude 终端正在等待输入：\n\n%s\n\n回复 %s 选择，/yes 确认当前选项，/no 取消。", text, options)
+	return opts
 }
 
 func compactInteractivePrompt(pane string) string {
@@ -764,22 +789,16 @@ func normalizePromptLine(raw string) (line string, keep bool, interactive bool) 
 	return line, true, false
 }
 
-func promptOptionHints(prompt string) string {
-	seen := map[string]struct{}{}
-	var hints []string
-
-	for _, raw := range strings.Split(prompt, "\n") {
-		if n := optionLineNumber(strings.TrimSpace(raw)); n != "" {
-			cmd := "/" + n
-			if _, ok := seen[cmd]; ok {
-				continue
-			}
-			seen[cmd] = struct{}{}
-			hints = append(hints, cmd)
-		}
+// hasExistingSession checks whether Claude Code has been run in this workdir before.
+// Claude stores project state in ~/.claude/projects/ keyed by a hash of the path.
+// We check for .claude/ in the workdir as a simpler heuristic — if it doesn't exist,
+// this is a fresh session and --continue would fail.
+func hasExistingSession(workDir string) bool {
+	entries, err := os.ReadDir(filepath.Join(workDir, ".claude"))
+	if err != nil {
+		return false
 	}
-
-	return strings.Join(hints, " ")
+	return len(entries) > 0
 }
 
 func optionLineNumber(line string) string {

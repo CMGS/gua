@@ -154,6 +154,11 @@ func (w *WeChat) StartTyping(ctx context.Context, userID, replyToken string) (st
 	return w.bot.StartTyping(ctx, userID, replyToken)
 }
 
+// Presenter returns the WeChat presenter for rendering responses.
+func (w *WeChat) Presenter() backend.Presenter {
+	return &presenter{}
+}
+
 // Creds returns the stored credentials (for persistence by caller).
 func (w *WeChat) Creds() *types.Credentials {
 	return w.creds

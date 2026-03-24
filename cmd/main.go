@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/projecteru2/core/log"
@@ -17,7 +19,9 @@ import (
 	"github.com/CMGS/gua/backend/wechat"
 	"github.com/CMGS/gua/config"
 	"github.com/CMGS/gua/libwechat/auth"
+	"github.com/CMGS/gua/libwechat/types"
 	"github.com/CMGS/gua/server"
+	"github.com/CMGS/gua/utils"
 )
 
 const (
@@ -85,8 +89,10 @@ func cmdSetup(ctx context.Context, args []string) {
 			logger.Errorf(ctx, err, "%s", "setup failed")
 			os.Exit(1)
 		}
-		credPath := credsPath("wechat")
-		if err := auth.SaveCredentials(credPath, w.Creds()); err != nil {
+		creds := w.Creds()
+		normalizedID := utils.NormalizeID(creds.ILinkBotID)
+		credPath := filepath.Join(accountsDir(*backendName), normalizedID+".json")
+		if err := auth.SaveCredentials(credPath, creds); err != nil {
 			logger.Errorf(ctx, err, "%s", "save credentials")
 			os.Exit(1)
 		}
@@ -121,53 +127,95 @@ func cmdStart(ctx context.Context, args []string) {
 		os.Exit(1)
 	}
 
-	credPath := credsPath(*backendName)
-	creds, err := auth.LoadCredentials(credPath)
+	dir := accountsDir(*backendName)
+	allCreds, err := loadAllAccounts(dir)
 	if err != nil {
-		logger.Errorf(ctx, err, "load credentials from %s", credPath)
+		logger.Errorf(ctx, err, "load accounts from %s", dir)
+		os.Exit(1)
+	}
+	if len(allCreds) == 0 {
+		logger.Errorf(ctx, fmt.Errorf("no accounts found"), "no account files in %s, run setup first", dir)
 		os.Exit(1)
 	}
 
+	var wg sync.WaitGroup
+	for _, creds := range allCreds {
+		wg.Add(1)
+		go func(creds *types.Credentials) {
+			defer wg.Done()
+			botID := creds.ILinkBotID
+			logger.Infof(ctx, "starting account %s: backend=%s agent=%s", botID, *backendName, *agentName)
+			runAccount(ctx, creds, *backendName, *agentName,
+				claude.WithClaudeCmd(*claudeCmd),
+				claude.WithBridgeBin(*bridgeBin),
+				claude.WithModel(*model),
+				claude.WithWorkDir(*workDir),
+			)
+		}(creds)
+	}
+	wg.Wait()
+}
+
+func runAccount(ctx context.Context, creds *types.Credentials, backendName, agentName string, opts ...claude.Option) {
+	logger := log.WithFunc("cmd.runAccount")
+	botID := creds.ILinkBotID
+
 	var b backend.Backend
-	switch *backendName {
+	switch backendName {
 	case "wechat":
 		b = wechat.New(creds)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown backend: %s\n", *backendName)
-		os.Exit(1)
+		logger.Errorf(ctx, fmt.Errorf("unknown backend: %s", backendName), "account %s", botID)
+		return
 	}
 
-	claudeMD := config.MergedMD(*backendName)
+	claudeMD := config.MergedMD(backendName, b.Presenter().MediaInstructions())
+	opts = append(opts, claude.WithClaudeMD(claudeMD))
 
-	switch *agentName {
+	switch agentName {
 	case "claude":
-		a, err := claude.New(ctx,
-			claude.WithClaudeCmd(*claudeCmd),
-			claude.WithBridgeBin(*bridgeBin),
-			claude.WithModel(*model),
-			claude.WithWorkDir(*workDir),
-			claude.WithClaudeMD(claudeMD),
-		)
+		a, err := claude.New(ctx, opts...)
 		if err != nil {
-			logger.Errorf(ctx, err, "%s", "create agent")
-			os.Exit(1)
+			logger.Errorf(ctx, err, "create agent for account %s", botID)
+			return
 		}
 
 		srv := server.New(b, a)
-		logger.Infof(ctx, "starting gua: backend=%s agent=%s workdir=%s", *backendName, *agentName, *workDir)
+		logger.Infof(ctx, "account %s running: backend=%s agent=%s", botID, backendName, agentName)
 		if err := srv.Run(ctx); err != nil {
-			logger.Warnf(ctx, "server exited: %v", err)
+			logger.Warnf(ctx, "account %s server exited: %v", botID, err)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown agent: %s\n", *agentName)
-		os.Exit(1)
+		logger.Errorf(ctx, fmt.Errorf("unknown agent: %s", agentName), "account %s", botID)
 	}
 }
 
-func credsPath(backendName string) string {
+func loadAllAccounts(dir string) ([]*types.Credentials, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read accounts dir %s: %w", dir, err)
+	}
+
+	var accounts []*types.Credentials
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		creds, err := auth.LoadCredentials(path)
+		if err != nil {
+			log.WithFunc("cmd.loadAllAccounts").Warnf(context.TODO(), "skip invalid account file %s: %v", path, err)
+			continue
+		}
+		accounts = append(accounts, creds)
+	}
+	return accounts, nil
+}
+
+func accountsDir(backendName string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.TempDir()
 	}
-	return filepath.Join(home, ".gua", backendName, "account.json")
+	return filepath.Join(home, ".gua", backendName, "accounts")
 }

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -15,21 +14,17 @@ var (
 	blankLineRegex = regexp.MustCompile(`\n{3,}`)
 )
 
-// FormatInbound converts an InboundMessage into an agent Message.
-func FormatInbound(msg backend.InboundMessage) agent.Message {
+// FormatInbound converts an InboundMessage into an agent Message,
+// using the presenter to annotate media files in a platform-specific way.
+func FormatInbound(msg backend.InboundMessage, p backend.Presenter) agent.Message {
 	var b strings.Builder
 	b.WriteString(msg.Text)
 
 	for _, mf := range msg.MediaFiles {
-		switch mf.Type {
-		case backend.MediaTypeImage:
-			fmt.Fprintf(&b, "\n[图片: %s]", mf.Path)
-		case backend.MediaTypeVoice:
-			fmt.Fprintf(&b, "\n[语音: %s]", mf.Path)
-		case backend.MediaTypeVideo:
-			fmt.Fprintf(&b, "\n[视频: %s]", mf.Path)
-		case backend.MediaTypeFile:
-			fmt.Fprintf(&b, "\n[文件: %s] (%s)", mf.Path, mf.FileName)
+		annotation := p.FormatMediaAnnotation(mf)
+		if annotation != "" {
+			b.WriteString("\n")
+			b.WriteString(annotation)
 		}
 	}
 
@@ -40,7 +35,6 @@ func FormatInbound(msg backend.InboundMessage) agent.Message {
 }
 
 // ExtractFiles extracts /tmp/gua-* file paths from agent response text.
-// Returns the cleaned text and a list of valid existing file paths.
 func ExtractFiles(text string) (string, []string) {
 	matches := filePathRegex.FindAllString(text, -1)
 	if len(matches) == 0 {
@@ -74,8 +68,7 @@ func ExtractFiles(text string) (string, []string) {
 	return cleaned, paths
 }
 
-// MergeFiles validates and deduplicates file paths gathered from text extraction
-// and explicit tool outputs.
+// MergeFiles validates and deduplicates file paths.
 func MergeFiles(paths ...[]string) []string {
 	seen := map[string]struct{}{}
 	var merged []string
