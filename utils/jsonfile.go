@@ -14,11 +14,11 @@ func ReadJSONFile[T any](path string) (*T, error) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 
-	var v T
-	if err := json.Unmarshal(data, &v); err != nil {
+	v := new(T)
+	if err := json.Unmarshal(data, v); err != nil {
 		return nil, fmt.Errorf("unmarshal %s: %w", path, err)
 	}
-	return &v, nil
+	return v, nil
 }
 
 // WriteJSONFile marshals a value to JSON and writes it to path.

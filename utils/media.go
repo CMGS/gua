@@ -6,15 +6,7 @@ import (
 	"strings"
 )
 
-// NormalizeID replaces @, ., and : with - for filesystem safety.
-func NormalizeID(raw string) string {
-	return idReplacer.Replace(raw)
-}
-
-var idReplacer = strings.NewReplacer("@", "-", ".", "-", ":", "-")
-
 // DetectImageFormat checks magic bytes to determine image format.
-// Returns "png", "gif", or "jpg" (default).
 func DetectImageFormat(data []byte) string {
 	if len(data) >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
 		return "png"

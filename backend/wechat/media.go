@@ -5,20 +5,19 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/google/uuid"
 	"github.com/projecteru2/core/log"
 
-	"github.com/CMGS/gua/backend"
 	"github.com/CMGS/gua/libwechat"
-	"github.com/CMGS/gua/libwechat/types"
+	wxtypes "github.com/CMGS/gua/libwechat/types"
+	"github.com/CMGS/gua/types"
 	"github.com/CMGS/gua/utils"
 )
 
 // DownloadMessageMedia downloads all media from a WeChat message to /tmp.
 // Errors on individual items are logged and skipped.
-func DownloadMessageMedia(ctx context.Context, bot *libwechat.Bot, msg *types.WeixinMessage) []backend.MediaFile {
+func DownloadMessageMedia(ctx context.Context, bot *libwechat.Bot, msg *wxtypes.WeixinMessage) []types.MediaFile {
 	logger := log.WithFunc("wechat.DownloadMessageMedia")
-	var files []backend.MediaFile
+	var files []types.MediaFile
 
 	for i := range msg.ItemList {
 		item := &msg.ItemList[i]
@@ -30,7 +29,7 @@ func DownloadMessageMedia(ctx context.Context, bot *libwechat.Bot, msg *types.We
 				logger.Warnf(ctx, "download image: %v", err)
 				continue
 			}
-			if mf, err := saveMedia(data, utils.DetectImageFormat(data), backend.MediaTypeImage, ""); err != nil {
+			if mf, err := saveMedia(data, utils.DetectImageFormat(data), types.MediaTypeImage, ""); err != nil {
 				logger.Warnf(ctx, "save image: %v", err)
 			} else {
 				files = append(files, mf)
@@ -42,7 +41,7 @@ func DownloadMessageMedia(ctx context.Context, bot *libwechat.Bot, msg *types.We
 				logger.Warnf(ctx, "download video: %v", err)
 				continue
 			}
-			if mf, err := saveMedia(data, "mp4", backend.MediaTypeVideo, ""); err != nil {
+			if mf, err := saveMedia(data, "mp4", types.MediaTypeVideo, ""); err != nil {
 				logger.Warnf(ctx, "save video: %v", err)
 			} else {
 				files = append(files, mf)
@@ -54,7 +53,7 @@ func DownloadMessageMedia(ctx context.Context, bot *libwechat.Bot, msg *types.We
 				logger.Warnf(ctx, "download file: %v", err)
 				continue
 			}
-			if mf, err := saveMedia(data, item.FileItem.FileName, backend.MediaTypeFile, item.FileItem.FileName); err != nil {
+			if mf, err := saveMedia(data, item.FileItem.FileName, types.MediaTypeFile, item.FileItem.FileName); err != nil {
 				logger.Warnf(ctx, "save file: %v", err)
 			} else {
 				files = append(files, mf)
@@ -66,7 +65,7 @@ func DownloadMessageMedia(ctx context.Context, bot *libwechat.Bot, msg *types.We
 				logger.Warnf(ctx, "download voice: %v", err)
 				continue
 			}
-			if mf, err := saveMedia(data, "wav", backend.MediaTypeVoice, ""); err != nil {
+			if mf, err := saveMedia(data, "wav", types.MediaTypeVoice, ""); err != nil {
 				logger.Warnf(ctx, "save voice: %v", err)
 			} else {
 				files = append(files, mf)
@@ -78,10 +77,10 @@ func DownloadMessageMedia(ctx context.Context, bot *libwechat.Bot, msg *types.We
 }
 
 // saveMedia writes data to a temp file and returns a MediaFile.
-func saveMedia(data []byte, ext string, mediaType backend.MediaType, fileName string) (backend.MediaFile, error) {
-	path := fmt.Sprintf("/tmp/gua-%s.%s", uuid.New().String()[:8], ext)
+func saveMedia(data []byte, ext string, mediaType types.MediaType, fileName string) (types.MediaFile, error) {
+	path := fmt.Sprintf("/tmp/gua-%s.%s", utils.ShortID(), ext)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return backend.MediaFile{}, fmt.Errorf("write %s: %w", path, err)
+		return types.MediaFile{}, fmt.Errorf("write %s: %w", path, err)
 	}
-	return backend.MediaFile{Path: path, Type: mediaType, FileName: fileName}, nil
+	return types.MediaFile{Path: path, Type: mediaType, FileName: fileName}, nil
 }

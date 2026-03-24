@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/CMGS/gua/backend"
+	"github.com/CMGS/gua/types"
 )
 
 type presenter struct{}
@@ -39,15 +39,15 @@ func (p *presenter) FormatError(err error) string {
 }
 
 // FormatMediaAnnotation returns Chinese media annotations for agent messages.
-func (p *presenter) FormatMediaAnnotation(mf backend.MediaFile) string {
+func (p *presenter) FormatMediaAnnotation(mf types.MediaFile) string {
 	switch mf.Type {
-	case backend.MediaTypeImage:
+	case types.MediaTypeImage:
 		return fmt.Sprintf("[图片: %s]", mf.Path)
-	case backend.MediaTypeVoice:
+	case types.MediaTypeVoice:
 		return fmt.Sprintf("[语音: %s]", mf.Path)
-	case backend.MediaTypeVideo:
+	case types.MediaTypeVideo:
 		return fmt.Sprintf("[视频: %s]", mf.Path)
-	case backend.MediaTypeFile:
+	case types.MediaTypeFile:
 		return fmt.Sprintf("[文件: %s] (%s)", mf.Path, mf.FileName)
 	default:
 		return ""

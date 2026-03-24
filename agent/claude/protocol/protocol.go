@@ -7,20 +7,20 @@ import (
 	"io"
 )
 
+// Envelope types.
+const (
+	TypeRegister          = "register"           // bridge → dispatcher: identity registration
+	TypeChannelEvent      = "channel_event"      // dispatcher → bridge: push to Claude Code
+	TypeToolCall          = "tool_call"          // bridge → dispatcher: Claude called gua_reply
+	TypePermissionRequest = "permission_request" // bridge → dispatcher: Claude wants approval
+	TypePermissionReply   = "permission_reply"   // dispatcher → bridge: user replied y/n
+)
+
 // Envelope is the message format for dispatcher ↔ bridge communication over Unix socket.
 type Envelope struct {
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload"`
 }
-
-// Envelope types.
-const (
-	TypeRegister          = "register"           // bridge → dispatcher: identity registration
-	TypeChannelEvent      = "channel_event"      // dispatcher → bridge: push to Claude Code
-	TypeToolCall          = "tool_call"           // bridge → dispatcher: Claude called gua_reply
-	TypePermissionRequest = "permission_request"  // bridge → dispatcher: Claude wants approval
-	TypePermissionReply   = "permission_reply"    // dispatcher → bridge: user replied y/n
-)
 
 // Register is sent by the bridge to identify which user it serves.
 type Register struct {

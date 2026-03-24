@@ -23,11 +23,11 @@ const (
 func FetchQRCode(ctx context.Context, opts ...client.ClientOption) (*types.QRCodeResponse, error) {
 	c := client.NewUnauthenticatedClient(opts...)
 
-	var resp types.QRCodeResponse
-	if err := c.DoGet(ctx, qrCodeURL, &resp); err != nil {
+	resp := &types.QRCodeResponse{}
+	if err := c.DoGet(ctx, qrCodeURL, resp); err != nil {
 		return nil, fmt.Errorf("fetch QR code: %w", err)
 	}
-	return &resp, nil
+	return resp, nil
 }
 
 // PollQRStatus long-polls for QR code scan confirmation.

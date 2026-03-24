@@ -29,7 +29,7 @@ func New(b backend.Backend, a agent.Agent) *Server {
 	}
 }
 
-// Run starts the server. Blocks until ctx is cancelled.
+// Run starts the server. Blocks until ctx is canceled.
 func (s *Server) Run(ctx context.Context) error {
 	logger := log.WithFunc("server.Run")
 	logger.Infof(ctx, "starting server: backend=%s agent=%s", s.backend.Name(), s.agent.Name())
@@ -37,12 +37,17 @@ func (s *Server) Run(ctx context.Context) error {
 	err := s.backend.Start(ctx, func(ctx context.Context, msg backend.InboundMessage) {
 		s.sem <- struct{}{}
 		go func() {
-			defer func() { <-s.sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					log.WithFunc("server.handleInbound").Warnf(ctx, "panic recovered: %v", r)
+				}
+				<-s.sem
+			}()
 			s.handleInbound(ctx, msg)
 		}()
 	})
 
-	s.agent.CloseAll() //nolint:errcheck
+	_ = s.agent.CloseAll()
 	return err
 }
 
@@ -53,8 +58,9 @@ func (s *Server) handleInbound(ctx context.Context, msg backend.InboundMessage) 
 
 	presenter := s.backend.Presenter()
 
-	if len(msg.MediaFiles) == 0 && strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
-		if resp, handled, err := s.agent.Control(ctx, msg.SenderID, strings.TrimSpace(msg.Text)); handled {
+	trimmedText := strings.TrimSpace(msg.Text)
+	if len(msg.MediaFiles) == 0 && strings.HasPrefix(trimmedText, "/") {
+		if resp, handled, err := s.agent.Control(ctx, msg.SenderID, trimmedText); handled {
 			if err != nil {
 				s.sendError(ctx, msg, presenter, err)
 				return
@@ -80,7 +86,7 @@ func (s *Server) handleInbound(ctx context.Context, msg backend.InboundMessage) 
 func (s *Server) sendError(ctx context.Context, msg backend.InboundMessage, p backend.Presenter, err error) {
 	logger := log.WithFunc("server.sendError")
 	logger.Warnf(ctx, "error for %s: %v", msg.SenderID, err)
-	s.backend.Send(ctx, backend.OutboundMessage{ //nolint:errcheck
+	_ = s.backend.Send(ctx, backend.OutboundMessage{
 		RecipientID: msg.SenderID,
 		Text:        p.FormatError(err),
 		ReplyToken:  msg.ReplyToken,
@@ -102,7 +108,7 @@ func (s *Server) sendResponse(ctx context.Context, msg backend.InboundMessage, p
 			description = resp.Permission.Description
 		}
 		text := p.FormatPrompt(resp.PromptText, resp.Options, toolName, description)
-		s.backend.Send(ctx, backend.OutboundMessage{ //nolint:errcheck
+		_ = s.backend.Send(ctx, backend.OutboundMessage{
 			RecipientID: msg.SenderID,
 			Text:        text,
 			ReplyToken:  msg.ReplyToken,
@@ -132,6 +138,6 @@ func (s *Server) sendResponse(ctx context.Context, msg backend.InboundMessage, p
 		}); err != nil {
 			logger.Warnf(ctx, "send file %s to %s: %v", f, msg.SenderID, err)
 		}
-		os.Remove(f) //nolint:errcheck
+		_ = os.Remove(f)
 	}
 }
