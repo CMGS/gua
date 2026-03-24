@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +27,9 @@ const (
 
 	behaviorAllow = "allow"
 	behaviorDeny  = "deny"
+
+	elicitAccept  = "accept"
+	elicitDecline = "decline"
 )
 
 // Option configures a ClaudeCode agent.
@@ -102,9 +106,7 @@ func WithModel(model string) Option {
 
 // WithRuntime sets the runtime container (tmux, screen, etc.) for hosting Claude sessions.
 func WithRuntime(rt runtime.Runtime) Option {
-	return func(c *ClaudeCode) {
-		c.rt = rt
-	}
+	return func(c *ClaudeCode) { c.rt = rt }
 }
 
 // WithWorkDir sets the base working directory for sessions.
@@ -133,35 +135,39 @@ func (c *ClaudeCode) Send(ctx context.Context, userID string, msg agent.Message)
 		sess.pushResponse(permissionResponse(perm))
 		return nil
 	}
+	if elicit := sess.elicitation.Get(); elicit != nil {
+		sess.pushResponse(elicitationResponse(elicit))
+		return nil
+	}
 
 	return c.sendChannelEvent(sess, userID, msg)
 }
 
 // Control handles out-of-band user actions such as confirm/deny/select.
-func (c *ClaudeCode) Control(ctx context.Context, userID string, action types.Action) error {
-	c.mu.RLock()
-	sess, ok := c.sessions[userID]
-	c.mu.RUnlock()
+func (c *ClaudeCode) Control(ctx context.Context, userID string, action types.Action) (bool, error) {
+	sess, ok := c.getSession(userID)
 	if !ok {
-		return nil
+		return false, nil
 	}
 
 	if perm := sess.permission.Get(); perm != nil {
-		return c.handlePermissionControl(ctx, sess, action, perm)
+		return true, c.handlePermissionControl(ctx, sess, action, perm)
+	}
+
+	if elicit := sess.elicitation.Get(); elicit != nil {
+		return true, c.handleElicitationControl(ctx, sess, action, elicit)
 	}
 
 	if sess.prompt.Get() != "" {
-		return c.handleInteractiveControl(ctx, sess, action)
+		return true, c.handleInteractiveControl(ctx, sess, action)
 	}
 
-	return nil
+	return false, nil
 }
 
 // Subscribe returns a channel that receives all responses for a user.
 func (c *ClaudeCode) Subscribe(userID string) <-chan *agent.Response {
-	c.mu.RLock()
-	sess, ok := c.sessions[userID]
-	c.mu.RUnlock()
+	sess, ok := c.getSession(userID)
 	if !ok {
 		// Return a closed channel if no session
 		ch := make(chan *agent.Response)
@@ -217,7 +223,7 @@ func (c *ClaudeCode) Restart(ctx context.Context, userID string, flags map[strin
 	sess, hasSession := c.sessions[userID]
 	c.mu.RUnlock()
 
-	if flagsEqual(current, flags) {
+	if maps.Equal(current, flags) {
 		return false, nil
 	}
 
@@ -243,6 +249,7 @@ func (c *ClaudeCode) Restart(ctx context.Context, userID string, flags map[strin
 	}
 	sess.writer.Clear()
 	sess.permission.Clear()
+	sess.elicitation.Clear()
 	sess.prompt.Clear()
 
 	c.mu.Lock()

@@ -82,13 +82,18 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 		return
 	}
 
-	// 2. Control actions.
+	// 2. Control actions — only consumed when agent has an active prompt.
 	if len(msg.MediaFiles) == 0 {
 		if action := presenter.ParseAction(trimmed); action != nil {
-			if err := s.agent.Control(ctx, msg.SenderID, *action); err != nil {
+			handled, err := s.agent.Control(ctx, msg.SenderID, *action)
+			if err != nil {
 				s.sendText(ctx, msg, presenter.FormatError(err))
+				return
 			}
-			return
+			if handled {
+				return
+			}
+			// No active prompt — fall through to send as normal message.
 		}
 	}
 
@@ -195,6 +200,9 @@ func (s *Server) sendResponseToUser(ctx context.Context, userID string, p channe
 		if resp.Permission != nil {
 			toolName = resp.Permission.ToolName
 			description = resp.Permission.Description
+			if description == "" {
+				description = resp.Permission.InputPreview
+			}
 		}
 		text := p.FormatPrompt(resp.PromptText, resp.Options, toolName, description)
 		_ = s.channel.Send(ctx, channel.OutboundMessage{

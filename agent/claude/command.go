@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/projecteru2/core/log"
+
 	"github.com/CMGS/gua/agent"
 	"github.com/CMGS/gua/agent/claude/protocol"
 	"github.com/CMGS/gua/runtime"
@@ -30,7 +32,7 @@ func (c *ClaudeCode) buildCommand(userID string, continueSession bool) string {
 		args = append(args, runtime.ShellQuote("--dangerously-skip-permissions"))
 	} else {
 		// Pre-approve common tools to reduce permission prompts.
-		for _, tool := range []string{"Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "mcp__gua__gua_reply"} {
+		for _, tool := range []string{"Read", "Glob", "Grep", "LS", "mcp__gua__gua_reply"} {
 			args = append(args, runtime.ShellQuote("--allowedTools"), runtime.ShellQuote(tool))
 		}
 	}
@@ -55,7 +57,7 @@ func (c *ClaudeCode) handleInteractiveControl(ctx context.Context, sess *userSes
 	return nil
 }
 
-func (c *ClaudeCode) handlePermissionControl(ctx context.Context, sess *userSession, action types.Action, perm *protocol.Permission) error {
+func (c *ClaudeCode) handlePermissionControl(_ context.Context, sess *userSession, action types.Action, perm *protocol.Permission) error {
 	var behavior string
 	switch action.Type {
 	case types.ActionConfirm:
@@ -72,13 +74,48 @@ func (c *ClaudeCode) handlePermissionControl(ctx context.Context, sess *userSess
 		RequestID: perm.RequestID,
 		Behavior:  behavior,
 	}
-	if err := sess.writeEnvelope(protocol.TypePermissionReply, reply); err != nil {
+
+	// Route reply: hook channel (preferred) → bridge conn (fallback).
+	if ch := sess.hookPermReply.Get(); ch != nil {
+		ch <- reply
+	} else if err := sess.writeEnvelope(protocol.TypePermissionReply, reply); err != nil {
+		sess.permission.Clear()
 		return fmt.Errorf("send permission reply: %w", err)
 	}
 	sess.permission.Clear()
 
 	if behavior == behaviorDeny {
 		sess.pushResponse(&agent.Response{Text: "已拒绝该操作。"})
+	}
+	return nil
+}
+
+func (c *ClaudeCode) handleElicitationControl(_ context.Context, sess *userSession, action types.Action, elicit *protocol.Elicitation) error {
+	var elicitAction string
+	switch action.Type {
+	case types.ActionConfirm:
+		elicitAction = elicitAccept
+	case types.ActionDeny:
+		elicitAction = elicitDecline
+	default:
+		sess.pushResponse(elicitationResponse(elicit))
+		return nil
+	}
+
+	reply := protocol.ElicitationReply{
+		ElicitationID: elicit.ElicitationID,
+		Action:        elicitAction,
+	}
+
+	if ch := sess.hookElicitReply.Get(); ch != nil {
+		ch <- reply
+	} else {
+		log.WithFunc("claude.handleElicitationControl").Warnf(c.ctx, "no hook channel for elicitation reply, user=%s", sess.userID)
+	}
+	sess.elicitation.Clear()
+
+	if elicitAction == elicitDecline {
+		sess.pushResponse(&agent.Response{Text: "已拒绝该请求。"})
 	}
 	return nil
 }

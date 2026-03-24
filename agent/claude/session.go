@@ -3,13 +3,11 @@ package claude
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/projecteru2/core/log"
 
@@ -30,10 +28,15 @@ type userSession struct {
 
 	connReady chan struct{} // closed when bridge connects
 
-	writer     utils.SyncValue[io.Writer]
-	permission utils.SyncValue[*protocol.Permission]
-	prompt     utils.SyncValue[string] // pending interactive prompt from runtime
-	respawning utils.SyncValue[bool]   // true during Respawn, prevents bridge disconnect cleanup
+	writer      utils.SyncValue[io.Writer]
+	permission  utils.SyncValue[*protocol.Permission]
+	elicitation utils.SyncValue[*protocol.Elicitation]
+	prompt      utils.SyncValue[string] // pending interactive prompt from runtime
+	respawning  utils.SyncValue[bool]   // true during Respawn, prevents bridge disconnect cleanup
+
+	// Hook reply channels — set when a CC hook process is waiting for user decision.
+	hookPermReply   utils.SyncValue[chan protocol.Permission]
+	hookElicitReply utils.SyncValue[chan protocol.ElicitationReply]
 }
 
 func (s *userSession) close() {
@@ -68,10 +71,7 @@ func (s *userSession) writeEnvelope(typ string, payload any) error {
 }
 
 func (c *ClaudeCode) getOrCreateSession(ctx context.Context, userID string) (*userSession, error) {
-	c.mu.RLock()
-	sess, ok := c.sessions[userID]
-	c.mu.RUnlock()
-	if ok {
+	if sess, ok := c.getSession(userID); ok {
 		return sess, nil
 	}
 	return c.createSession(ctx, userID)
@@ -102,19 +102,44 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 		}
 	}
 
-	mcpJSON, err := json.Marshal(map[string]any{
+	mcpConfig := map[string]any{
 		"mcpServers": map[string]any{
 			"gua": map[string]any{
 				"command": c.bridgeBin,
 				"args":    []string{"--socket", c.socketPath, "--user", userID},
 			},
 		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal mcp config: %w", err)
 	}
-	if writeErr := os.WriteFile(filepath.Join(workDir, ".mcp.json"), mcpJSON, 0o644); writeErr != nil { //nolint:gosec // non-sensitive config file
-		return nil, fmt.Errorf("write .mcp.json: %w", writeErr)
+	if err := utils.WriteJSONFile(filepath.Join(workDir, ".mcp.json"), &mcpConfig, 0o644); err != nil {
+		return nil, err
+	}
+
+	// Write hook settings so CC routes permission/elicitation through gua-bridge.
+	hookCmd := func(hookType string) string {
+		return fmt.Sprintf("%s --socket %s --user %s --hook %s", c.bridgeBin, c.socketPath, userID, hookType)
+	}
+	hookSettings := map[string]any{
+		"hooks": map[string]any{
+			"PermissionRequest": []map[string]any{{
+				"matcher": "",
+				"hooks": []map[string]any{{
+					"type":    "command",
+					"command": hookCmd("permission"),
+					"timeout": 300000,
+				}},
+			}},
+			"Elicitation": []map[string]any{{
+				"matcher": "",
+				"hooks": []map[string]any{{
+					"type":    "command",
+					"command": hookCmd("elicitation"),
+					"timeout": 300000,
+				}},
+			}},
+		},
+	}
+	if err := utils.WriteJSONFile(filepath.Join(workDir, ".claude", "settings.local.json"), &hookSettings, 0o644); err != nil {
+		return nil, err
 	}
 
 	sessCtx, cancel := context.WithCancel(ctx)
@@ -161,7 +186,6 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 		_ = c.Close(userID)
 		return nil, fmt.Errorf("bridge connection timeout for user %s: %w", userID, err)
 	}
-	time.Sleep(500 * time.Millisecond) // let Claude finish initializing
 
 	return sess, nil
 }

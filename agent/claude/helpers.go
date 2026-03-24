@@ -11,6 +11,13 @@ import (
 	"github.com/CMGS/gua/types"
 )
 
+func (c *ClaudeCode) getSession(userID string) (*userSession, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	sess, ok := c.sessions[userID]
+	return sess, ok
+}
+
 func (c *ClaudeCode) getUserFlag(userID, key string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -18,18 +25,6 @@ func (c *ClaudeCode) getUserFlag(userID, key string) string {
 		return flags[key]
 	}
 	return ""
-}
-
-func flagsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
 }
 
 func permissionResponse(perm *protocol.Permission) *agent.Response {
@@ -50,6 +45,16 @@ func interactiveResponse(prompt string) *agent.Response {
 		Prompt:     agent.PromptInteractive,
 		PromptText: prompt,
 		Options:    runtime.ExtractOptions(prompt),
+	}
+}
+
+func elicitationResponse(elicit *protocol.Elicitation) *agent.Response {
+	return &agent.Response{
+		Prompt: agent.PromptElicitation,
+		Permission: &agent.PermissionInfo{
+			ToolName:    elicit.ServerName,
+			Description: elicit.Message,
+		},
 	}
 }
 

@@ -116,6 +116,7 @@ func WithNotificationHandler(h NotificationHandler) Option {
 	return func(s *Server) { s.notifyHandler = h }
 }
 
+
 // Run starts the stdio read loop. Blocks until ctx is canceled or stdin closes.
 func (s *Server) Run(ctx context.Context) error {
 	logger := log.WithFunc("mcpserver.Run")
@@ -216,8 +217,7 @@ func (s *Server) handleInitialize() map[string]any {
 		"protocolVersion": protocolVersion,
 		"capabilities": map[string]any{
 			"experimental": map[string]any{
-				"claude/channel":            map[string]any{},
-				"claude/channel/permission": map[string]any{},
+				"claude/channel": map[string]any{},
 			},
 			"tools": map[string]any{},
 		},
@@ -271,7 +271,6 @@ func (s *Server) handleNotification(ctx context.Context, req jsonrpcRequest) {
 	logger := log.WithFunc("mcpserver.handleNotification")
 
 	switch req.Method {
-	case "notifications/initialized":
 	case "notifications/cancelled": //nolint:misspell // MCP protocol-defined method name
 		// no-op
 	default:

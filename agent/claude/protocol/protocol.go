@@ -14,6 +14,9 @@ const (
 	TypeToolCall          = "tool_call"          // bridge → dispatcher: Claude called gua_reply
 	TypePermissionRequest = "permission_request" // bridge → dispatcher: Claude wants approval
 	TypePermissionReply   = "permission_reply"   // dispatcher → bridge: user replied y/n
+	TypeHookPermission    = "hook_permission"    // hook → dispatcher: CC hook permission request
+	TypeHookElicitation   = "hook_elicitation"   // hook → dispatcher: CC hook elicitation request
+	TypeElicitationReply  = "elicitation_reply"  // dispatcher → hook: user replied to elicitation
 )
 
 // Envelope is the message format for dispatcher ↔ bridge communication over Unix socket.
@@ -47,7 +50,34 @@ type Permission struct {
 	Description  string `json:"description,omitempty"`
 	InputPreview string `json:"input_preview,omitempty"`
 	Behavior     string `json:"behavior,omitempty"` // "allow" or "deny"
-	Prompt       string `json:"-"`                  // not serialized; captured from runtime output
+	Prompt       string `json:"-"`                  // not serialized; constructed from structured data or runtime output
+}
+
+// HookPermission wraps a permission request from a CC hook process.
+type HookPermission struct {
+	UserID     string     `json:"user_id"`
+	Permission Permission `json:"permission"`
+}
+
+// Elicitation carries MCP elicitation request data.
+type Elicitation struct {
+	ElicitationID string          `json:"elicitation_id"`
+	ServerName    string          `json:"server_name"`
+	Message       string          `json:"message"`
+	Schema        json.RawMessage `json:"schema,omitempty"`
+}
+
+// HookElicitation wraps an elicitation request from a CC hook process.
+type HookElicitation struct {
+	UserID      string      `json:"user_id"`
+	Elicitation Elicitation `json:"elicitation"`
+}
+
+// ElicitationReply carries the user's response to an elicitation.
+type ElicitationReply struct {
+	ElicitationID string          `json:"elicitation_id"`
+	Action        string          `json:"action"` // "accept", "decline", or "cancel"
+	Content       json.RawMessage `json:"content,omitempty"`
 }
 
 // WriteEnvelope encodes and writes a JSON-line envelope to the writer.

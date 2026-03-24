@@ -32,15 +32,27 @@ func (c *ClaudeCode) handleBridgeConn(conn net.Conn) {
 
 	env, err := protocol.ReadEnvelope(reader)
 	if err != nil {
-		logger.Warnf(c.ctx, "read register envelope: %v", err)
+		logger.Warnf(c.ctx, "read initial envelope: %v", err)
 		_ = conn.Close()
 		return
 	}
-	if env.Type != protocol.TypeRegister {
-		logger.Warnf(c.ctx, "expected register, got: %s", env.Type)
+
+	// Dispatch based on the first envelope type.
+	switch env.Type {
+	case protocol.TypeRegister:
+		c.handleBridgeSession(conn, reader, env)
+	case protocol.TypeHookPermission:
+		c.handleHookPermission(conn, env)
+	case protocol.TypeHookElicitation:
+		c.handleHookElicitation(conn, env)
+	default:
+		logger.Warnf(c.ctx, "unexpected initial envelope: %s", env.Type)
 		_ = conn.Close()
-		return
 	}
+}
+
+func (c *ClaudeCode) handleBridgeSession(conn net.Conn, reader *bufio.Reader, env *protocol.Envelope) {
+	logger := log.WithFunc("claude.handleBridgeSession")
 
 	reg, err := protocol.DecodePayload[protocol.Register](env)
 	if err != nil {
@@ -82,12 +94,100 @@ func (c *ClaudeCode) handleBridgeConn(conn net.Conn) {
 		return
 	}
 
-	if pane, err := c.rt.CaptureOutput(c.ctx, sess.proc); err == nil && pane != "" {
-		logger.Infof(c.ctx, "bridge disconnected for user=%s, cleaning up session\npane output:\n%s", sess.userID, pane)
-	} else {
-		logger.Infof(c.ctx, "bridge disconnected for user=%s, cleaning up session", sess.userID)
-	}
+	logger.Infof(c.ctx, "bridge disconnected for user=%s, cleaning up session", sess.userID)
 	_ = c.Close(sess.userID)
+}
+
+// monitorHookConn detects when a hook connection closes (CC kills hook on timeout).
+// Returns a context that is cancelled when conn is closed or the parent ctx is done.
+func monitorHookConn(parent context.Context, conn net.Conn) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		buf := make([]byte, 1)
+		_, _ = conn.Read(buf) // blocks until close
+		cancel()
+	}()
+	return ctx, cancel
+}
+
+func (c *ClaudeCode) handleHookPermission(conn net.Conn, env *protocol.Envelope) {
+	logger := log.WithFunc("claude.handleHookPermission")
+	defer conn.Close() //nolint:errcheck
+
+	hp, err := protocol.DecodePayload[protocol.HookPermission](env)
+	if err != nil {
+		logger.Warnf(c.ctx, "decode hook permission: %v", err)
+		return
+	}
+
+	sess, ok := c.getSession(hp.UserID)
+	if !ok {
+		logger.Warnf(c.ctx, "no session for hook user: %s", hp.UserID)
+		return
+	}
+
+	hookCtx, hookCancel := monitorHookConn(c.ctx, conn)
+	defer hookCancel()
+
+	replyCh := make(chan protocol.Permission, 1)
+	sess.hookPermReply.Set(replyCh)
+	defer sess.hookPermReply.Clear()
+
+	perm := &hp.Permission
+	sess.permission.Set(perm)
+	sess.pushResponse(permissionResponse(perm))
+
+	logger.Debugf(c.ctx, "hook permission request for user=%s tool=%s", hp.UserID, perm.ToolName)
+
+	select {
+	case reply := <-replyCh:
+		if writeErr := protocol.WriteEnvelope(conn, protocol.TypePermissionReply, reply); writeErr != nil {
+			logger.Warnf(c.ctx, "write hook permission reply: %v", writeErr)
+		}
+	case <-hookCtx.Done():
+		logger.Debugf(c.ctx, "hook permission cancelled for user=%s", hp.UserID)
+		sess.permission.Clear()
+	}
+}
+
+func (c *ClaudeCode) handleHookElicitation(conn net.Conn, env *protocol.Envelope) {
+	logger := log.WithFunc("claude.handleHookElicitation")
+	defer conn.Close() //nolint:errcheck
+
+	he, err := protocol.DecodePayload[protocol.HookElicitation](env)
+	if err != nil {
+		logger.Warnf(c.ctx, "decode hook elicitation: %v", err)
+		return
+	}
+
+	sess, ok := c.getSession(he.UserID)
+	if !ok {
+		logger.Warnf(c.ctx, "no session for hook user: %s", he.UserID)
+		return
+	}
+
+	hookCtx, hookCancel := monitorHookConn(c.ctx, conn)
+	defer hookCancel()
+
+	replyCh := make(chan protocol.ElicitationReply, 1)
+	sess.hookElicitReply.Set(replyCh)
+	defer sess.hookElicitReply.Clear()
+
+	elicit := &he.Elicitation
+	sess.elicitation.Set(elicit)
+	sess.pushResponse(elicitationResponse(elicit))
+
+	logger.Debugf(c.ctx, "hook elicitation for user=%s server=%s", he.UserID, elicit.ServerName)
+
+	select {
+	case reply := <-replyCh:
+		if writeErr := protocol.WriteEnvelope(conn, protocol.TypeElicitationReply, reply); writeErr != nil {
+			logger.Warnf(c.ctx, "write hook elicitation reply: %v", writeErr)
+		}
+	case <-hookCtx.Done():
+		logger.Debugf(c.ctx, "hook elicitation cancelled for user=%s", he.UserID)
+		sess.elicitation.Clear()
+	}
 }
 
 func (c *ClaudeCode) readBridgeLoop(sess *userSession) {
