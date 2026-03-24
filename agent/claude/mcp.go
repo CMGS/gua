@@ -100,7 +100,7 @@ func (c *ClaudeCode) handleBridgeSession(conn net.Conn, reader *bufio.Reader, en
 }
 
 // monitorHookConn detects when a hook connection closes (CC kills hook on timeout).
-// Returns a context that is cancelled when conn is closed or the parent ctx is done.
+// Returns a context that is canceled when conn is closed or the parent ctx is done.
 func monitorHookConn(parent context.Context, conn net.Conn) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(parent)
 	go func() {
@@ -146,7 +146,7 @@ func (c *ClaudeCode) handleHookPermission(conn net.Conn, env *protocol.Envelope)
 			logger.Warnf(c.ctx, "write hook permission reply: %v", writeErr)
 		}
 	case <-hookCtx.Done():
-		logger.Debugf(c.ctx, "hook permission cancelled for user=%s", hp.UserID)
+		logger.Debugf(c.ctx, "hook permission canceled for user=%s", hp.UserID)
 		sess.permission.Clear()
 	}
 }
@@ -186,7 +186,7 @@ func (c *ClaudeCode) handleHookElicitation(conn net.Conn, env *protocol.Envelope
 			logger.Warnf(c.ctx, "write hook elicitation reply: %v", writeErr)
 		}
 	case <-hookCtx.Done():
-		logger.Debugf(c.ctx, "hook elicitation cancelled for user=%s", he.UserID)
+		logger.Debugf(c.ctx, "hook elicitation canceled for user=%s", he.UserID)
 		sess.elicitation.Clear()
 	}
 }

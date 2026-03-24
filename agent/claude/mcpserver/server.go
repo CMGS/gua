@@ -116,7 +116,6 @@ func WithNotificationHandler(h NotificationHandler) Option {
 	return func(s *Server) { s.notifyHandler = h }
 }
 
-
 // Run starts the stdio read loop. Blocks until ctx is canceled or stdin closes.
 func (s *Server) Run(ctx context.Context) error {
 	logger := log.WithFunc("mcpserver.Run")

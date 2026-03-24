@@ -84,16 +84,8 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 
 	// 2. Control actions — only consumed when agent has an active prompt.
 	if len(msg.MediaFiles) == 0 {
-		if action := presenter.ParseAction(trimmed); action != nil {
-			handled, err := s.agent.Control(ctx, msg.SenderID, *action)
-			if err != nil {
-				s.sendText(ctx, msg, presenter.FormatError(err))
-				return
-			}
-			if handled {
-				return
-			}
-			// No active prompt — fall through to send as normal message.
+		if handled := s.tryControl(ctx, msg, presenter, trimmed); handled {
+			return
 		}
 	}
 
@@ -111,6 +103,22 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 
 	// Subscribe AFTER Send — session now exists.
 	s.ensureResponseLoop(ctx, msg.SenderID, stopTyping)
+}
+
+// tryControl attempts to dispatch a control action parsed from the input.
+// Returns true if the message was consumed.
+func (s *Server) tryControl(ctx context.Context, msg channel.InboundMessage, presenter channel.Presenter, trimmed string) bool {
+	action := presenter.ParseAction(trimmed)
+	if action == nil {
+		return false
+	}
+
+	handled, err := s.agent.Control(ctx, msg.SenderID, *action)
+	if err != nil {
+		s.sendText(ctx, msg, presenter.FormatError(err))
+		return true
+	}
+	return handled
 }
 
 func (s *Server) ensureResponseLoop(ctx context.Context, userID string, stopTyping func()) {

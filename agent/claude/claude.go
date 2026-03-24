@@ -162,7 +162,8 @@ func (c *ClaudeCode) Control(ctx context.Context, userID string, action types.Ac
 	}
 
 	if elicit := sess.elicitation.Get(); elicit != nil {
-		return true, c.handleElicitationControl(ctx, sess, action, elicit)
+		c.handleElicitationControl(ctx, sess, action, elicit)
+		return true, nil
 	}
 
 	if sess.prompt.Get() != "" {

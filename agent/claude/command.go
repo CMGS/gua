@@ -90,7 +90,7 @@ func (c *ClaudeCode) handlePermissionControl(_ context.Context, sess *userSessio
 	return nil
 }
 
-func (c *ClaudeCode) handleElicitationControl(_ context.Context, sess *userSession, action types.Action, elicit *protocol.Elicitation) error {
+func (c *ClaudeCode) handleElicitationControl(_ context.Context, sess *userSession, action types.Action, elicit *protocol.Elicitation) {
 	var elicitAction string
 	switch action.Type {
 	case types.ActionConfirm:
@@ -99,7 +99,7 @@ func (c *ClaudeCode) handleElicitationControl(_ context.Context, sess *userSessi
 		elicitAction = elicitDecline
 	default:
 		sess.pushResponse(elicitationResponse(elicit))
-		return nil
+		return
 	}
 
 	reply := protocol.ElicitationReply{
@@ -117,5 +117,4 @@ func (c *ClaudeCode) handleElicitationControl(_ context.Context, sess *userSessi
 	if elicitAction == elicitDecline {
 		sess.pushResponse(&agent.Response{Text: "declined"})
 	}
-	return nil
 }

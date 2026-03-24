@@ -95,7 +95,7 @@ func (t *Tmux) Watch(ctx context.Context, proc *runtime.Process, handler runtime
 	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil && !os.IsExist(err) {
 		return fmt.Errorf("mkfifo: %w", err)
 	}
-	defer os.Remove(fifoPath)
+	defer func() { _ = os.Remove(fifoPath) }()
 
 	if _, err := t.exec(ctx, "pipe-pane", "-t", proc.PaneID, "cat > '"+fifoPath+"'"); err != nil {
 		return fmt.Errorf("pipe-pane: %w", err)
@@ -110,7 +110,7 @@ func (t *Tmux) Watch(ctx context.Context, proc *runtime.Process, handler runtime
 
 	go func() {
 		<-ctx.Done()
-		f.Close()
+		_ = f.Close()
 	}()
 
 	window := make([]byte, 0, watchWindowSize*2)

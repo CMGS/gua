@@ -65,7 +65,7 @@ func main() {
 
 		// Hook mode: read CC hook JSON from stdin, forward to dispatcher, return decision.
 		if *hookMode != "" {
-			if err := runHook(ctx, *socketPath, *userID, *hookMode); err != nil {
+			if err := runHook(*socketPath, *userID, *hookMode); err != nil {
 				logger.Errorf(ctx, err, "hook exited")
 				return 1
 			}
@@ -191,7 +191,7 @@ func handleNotification(ctx context.Context, conn net.Conn, method string, param
 
 // runHook handles short-lived hook mode: reads CC hook JSON from stdin,
 // forwards to dispatcher, waits for user decision, outputs CC hook JSON.
-func runHook(ctx context.Context, socketPath, userID, hookType string) error {
+func runHook(socketPath, userID, hookType string) error {
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
