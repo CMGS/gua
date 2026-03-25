@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/projecteru2/core/log"
 	coretypes "github.com/projecteru2/core/types"
 
@@ -94,7 +95,7 @@ func cmdSetup(ctx context.Context, args []string) int {
 
 	switch *backendName {
 	case "wechat":
-		w := wechat.New(nil)
+		w := wechat.New(nil, "")
 		if err := w.Setup(ctx); err != nil {
 			logger.Errorf(ctx, err, "setup failed")
 			return 1
@@ -149,35 +150,41 @@ func cmdStart(ctx context.Context, args []string) int {
 		return 1
 	}
 
+	agentOpts := []claude.Option{
+		claude.WithRuntime(runtmux.New(*tmuxName)),
+		claude.WithClaudeCmd(*claudeCmd),
+		claude.WithBridgeBin(*bridgeBin),
+		claude.WithModel(*model),
+		claude.WithWorkDir(*workDir),
+	}
+
+	known := make(map[string]bool, len(allCreds))
 	var wg sync.WaitGroup
 	for _, creds := range allCreds {
+		known[creds.ILinkBotID] = true
 		wg.Add(1)
 		go func(creds *types.Credentials) {
 			defer wg.Done()
-			botID := creds.ILinkBotID
-			logger.Infof(ctx, "starting account %s: backend=%s agent=%s", botID, *backendName, *agentName)
-			rt := runtmux.New(*tmuxName)
-			runAccount(ctx, creds, *backendName, *agentName,
-				claude.WithRuntime(rt),
-				claude.WithClaudeCmd(*claudeCmd),
-				claude.WithBridgeBin(*bridgeBin),
-				claude.WithModel(*model),
-				claude.WithWorkDir(*workDir),
-			)
+			logger.Infof(ctx, "starting account %s: backend=%s agent=%s", creds.ILinkBotID, *backendName, *agentName)
+			runAccount(ctx, creds, *backendName, *agentName, dir, agentOpts...)
 		}(creds)
 	}
+
+	// Watch accounts directory for new accounts (e.g. from /share).
+	go watchNewAccounts(ctx, dir, known, *backendName, *agentName, agentOpts...)
+
 	wg.Wait()
 	return 0
 }
 
-func runAccount(ctx context.Context, creds *types.Credentials, backendName, agentName string, opts ...claude.Option) {
+func runAccount(ctx context.Context, creds *types.Credentials, backendName, agentName, acctDir string, opts ...claude.Option) {
 	logger := log.WithFunc("cmd.runAccount")
 	botID := creds.ILinkBotID
 
 	var b channel.Channel
 	switch backendName {
 	case "wechat":
-		b = wechat.New(creds)
+		b = wechat.New(creds, acctDir)
 	default:
 		logger.Errorf(ctx, fmt.Errorf("unknown backend: %s", backendName), "account %s", botID)
 		return
@@ -364,6 +371,54 @@ func cmdSessions(ctx context.Context, args []string) int {
 	}
 
 	return 0
+}
+
+// watchNewAccounts uses fsnotify to detect new credential files in the accounts
+// directory. When a new .json file appears (e.g. from /share), starts the account.
+func watchNewAccounts(ctx context.Context, dir string, known map[string]bool, backendName, agentName string, opts ...claude.Option) {
+	logger := log.WithFunc("cmd.watchNewAccounts")
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		logger.Warnf(ctx, "fsnotify init failed, new accounts require restart: %v", err)
+		return
+	}
+	defer watcher.Close()
+
+	if err := watcher.Add(dir); err != nil {
+		logger.Warnf(ctx, "watch %s failed: %v", dir, err)
+		return
+	}
+
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Op&fsnotify.Create == 0 || !strings.HasSuffix(event.Name, ".json") {
+				continue
+			}
+			creds, loadErr := auth.LoadCredentials(event.Name)
+			if loadErr != nil {
+				logger.Warnf(ctx, "load new account %s: %v", event.Name, loadErr)
+				continue
+			}
+			if known[creds.ILinkBotID] {
+				continue
+			}
+			known[creds.ILinkBotID] = true
+			logger.Infof(ctx, "new account detected: %s", creds.ILinkBotID)
+			go runAccount(ctx, creds, backendName, agentName, dir, opts...)
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			logger.Warnf(ctx, "fsnotify error: %v", err)
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func loadAllAccounts(ctx context.Context, dir string) ([]*types.Credentials, error) {

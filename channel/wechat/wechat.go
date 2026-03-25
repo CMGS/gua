@@ -24,13 +24,14 @@ var wechatPresenter channel.Presenter = &presenter{}
 
 // WeChat implements channel.Channel for the WeChat iLink platform.
 type WeChat struct {
-	bot   *libwechat.Bot
-	creds *types.Credentials
+	bot         *libwechat.Bot
+	creds       *types.Credentials
+	accountsDir string // where to save new account credentials from /share
 }
 
 // New creates a WeChat backend with the given credentials.
-func New(creds *types.Credentials) *WeChat {
-	return &WeChat{creds: creds}
+func New(creds *types.Credentials, accountsDir string) *WeChat {
+	return &WeChat{creds: creds, accountsDir: accountsDir}
 }
 
 // Name returns the backend identifier.
@@ -151,7 +152,9 @@ func (w *WeChat) StartTyping(ctx context.Context, userID, replyToken string) (st
 	return w.bot.StartTyping(ctx, userID, replyToken)
 }
 
-// ShareQR fetches the bot's QR code and saves it as a PNG image.
+// ShareQR fetches a bot login QR code, saves it as a PNG image, and polls
+// for scan confirmation in the background. On success, saves credentials
+// to the accounts directory (picked up by the file watcher).
 func (w *WeChat) ShareQR(ctx context.Context) (string, error) {
 	qr, err := auth.FetchQRCode(ctx)
 	if err != nil {
@@ -161,6 +164,26 @@ func (w *WeChat) ShareQR(ctx context.Context) (string, error) {
 	if err := goqrcode.WriteFile(qr.QRCodeImgContent, goqrcode.Medium, 512, path); err != nil {
 		return "", fmt.Errorf("generate QR image: %w", err)
 	}
+
+	if w.accountsDir != "" {
+		go func() {
+			logger := log.WithFunc("wechat.ShareQR")
+			creds, pollErr := auth.PollQRStatus(ctx, qr.QRCode, func(status string) {
+				logger.Debugf(ctx, "share QR status: %s", status)
+			})
+			if pollErr != nil {
+				logger.Warnf(ctx, "share QR poll failed: %v", pollErr)
+				return
+			}
+			credPath := filepath.Join(w.accountsDir, utils.NormalizeID(creds.ILinkBotID)+".json")
+			if saveErr := auth.SaveCredentials(credPath, creds); saveErr != nil {
+				logger.Warnf(ctx, "save shared credentials: %v", saveErr)
+				return
+			}
+			logger.Infof(ctx, "new account registered via /share: %s", creds.ILinkBotID)
+		}()
+	}
+
 	return path, nil
 }
 
