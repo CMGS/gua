@@ -131,11 +131,8 @@ func (c *ClaudeCode) handleHookPermission(conn net.Conn, env *protocol.Envelope)
 	defer hookCancel()
 
 	replyCh := make(chan protocol.Permission, 1)
-	sess.hookPermReply.Set(replyCh)
-	defer sess.hookPermReply.Clear()
-
 	perm := &hp.Permission
-	sess.permission.Set(perm)
+	sess.permQueue.Push(pendingPerm{perm: perm, replyCh: replyCh})
 	sess.pushResponse(permissionResponse(perm))
 
 	logger.Debugf(c.ctx, "hook permission request for user=%s tool=%s", hp.UserID, perm.ToolName)
@@ -146,8 +143,9 @@ func (c *ClaudeCode) handleHookPermission(conn net.Conn, env *protocol.Envelope)
 			logger.Warnf(c.ctx, "write hook permission reply: %v", writeErr)
 		}
 	case <-hookCtx.Done():
+		// Remove stale entry so it doesn't block the queue.
+		sess.permQueue.Remove(func(p pendingPerm) bool { return p.replyCh == replyCh })
 		logger.Debugf(c.ctx, "hook permission canceled for user=%s", hp.UserID)
-		sess.permission.Clear()
 	}
 }
 
@@ -171,11 +169,8 @@ func (c *ClaudeCode) handleHookElicitation(conn net.Conn, env *protocol.Envelope
 	defer hookCancel()
 
 	replyCh := make(chan protocol.ElicitationReply, 1)
-	sess.hookElicitReply.Set(replyCh)
-	defer sess.hookElicitReply.Clear()
-
 	elicit := &he.Elicitation
-	sess.elicitation.Set(elicit)
+	sess.elicitQueue.Push(pendingElicit{elicit: elicit, replyCh: replyCh})
 	sess.pushResponse(elicitationResponse(elicit))
 
 	logger.Debugf(c.ctx, "hook elicitation for user=%s server=%s", he.UserID, elicit.ServerName)
@@ -186,8 +181,8 @@ func (c *ClaudeCode) handleHookElicitation(conn net.Conn, env *protocol.Envelope
 			logger.Warnf(c.ctx, "write hook elicitation reply: %v", writeErr)
 		}
 	case <-hookCtx.Done():
+		sess.elicitQueue.Remove(func(e pendingElicit) bool { return e.replyCh == replyCh })
 		logger.Debugf(c.ctx, "hook elicitation canceled for user=%s", he.UserID)
-		sess.elicitation.Clear()
 	}
 }
 
@@ -223,7 +218,7 @@ func (c *ClaudeCode) readBridgeLoop(sess *userSession) {
 			if pane, captureErr := c.rt.CaptureOutput(c.ctx, sess.proc); captureErr == nil && pane != "" {
 				perm.Prompt = runtime.CompactInteractivePrompt(pane, claudeLineFilter)
 			}
-			sess.permission.Set(perm)
+			sess.permQueue.Push(pendingPerm{perm: perm}) // nil replyCh = reply via bridge writeEnvelope
 			sess.pushResponse(permissionResponse(perm))
 
 		default:

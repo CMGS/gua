@@ -118,32 +118,36 @@ func (c *ClaudeCode) pollTUIMenuExit(ctx context.Context, sess *userSession) {
 	}
 }
 
-func (c *ClaudeCode) handlePermissionControl(_ context.Context, sess *userSession, action types.Action, perm *protocol.Permission) error {
-	var behavior string
-	switch action.Type {
-	case types.ActionConfirm:
-		behavior = behaviorAllow
-	case types.ActionDeny:
-		behavior = behaviorDeny
-	default:
-		// Re-push the prompt
-		sess.pushResponse(permissionResponse(perm))
+func (c *ClaudeCode) handlePermissionControl(_ context.Context, sess *userSession, action types.Action) error {
+	// For unrecognized actions, peek to re-push the prompt without consuming it.
+	if action.Type != types.ActionConfirm && action.Type != types.ActionDeny {
+		if p, ok := sess.permQueue.Peek(); ok {
+			sess.pushResponse(permissionResponse(p.perm))
+		}
 		return nil
 	}
 
+	// Atomic pop — no peek-then-pop race.
+	front, ok := sess.permQueue.Pop()
+	if !ok {
+		return nil
+	}
+
+	behavior := behaviorAllow
+	if action.Type == types.ActionDeny {
+		behavior = behaviorDeny
+	}
+
 	reply := protocol.Permission{
-		RequestID: perm.RequestID,
+		RequestID: front.perm.RequestID,
 		Behavior:  behavior,
 	}
 
-	// Route reply: hook channel (preferred) → bridge conn (fallback).
-	if ch := sess.hookPermReply.Get(); ch != nil {
-		ch <- reply
+	if front.replyCh != nil {
+		front.replyCh <- reply
 	} else if err := sess.writeEnvelope(protocol.TypePermissionReply, reply); err != nil {
-		sess.permission.Clear()
 		return fmt.Errorf("send permission reply: %w", err)
 	}
-	sess.permission.Clear()
 
 	if behavior == behaviorDeny {
 		sess.pushResponse(&agent.Response{Text: "denied"})
@@ -151,29 +155,34 @@ func (c *ClaudeCode) handlePermissionControl(_ context.Context, sess *userSessio
 	return nil
 }
 
-func (c *ClaudeCode) handleElicitationControl(_ context.Context, sess *userSession, action types.Action, elicit *protocol.Elicitation) {
-	var elicitAction string
-	switch action.Type {
-	case types.ActionConfirm:
-		elicitAction = elicitAccept
-	case types.ActionDeny:
-		elicitAction = elicitDecline
-	default:
-		sess.pushResponse(elicitationResponse(elicit))
+func (c *ClaudeCode) handleElicitationControl(_ context.Context, sess *userSession, action types.Action) {
+	if action.Type != types.ActionConfirm && action.Type != types.ActionDeny {
+		if e, ok := sess.elicitQueue.Peek(); ok {
+			sess.pushResponse(elicitationResponse(e.elicit))
+		}
 		return
 	}
 
+	front, ok := sess.elicitQueue.Pop()
+	if !ok {
+		return
+	}
+
+	elicitAction := elicitAccept
+	if action.Type == types.ActionDeny {
+		elicitAction = elicitDecline
+	}
+
 	reply := protocol.ElicitationReply{
-		ElicitationID: elicit.ElicitationID,
+		ElicitationID: front.elicit.ElicitationID,
 		Action:        elicitAction,
 	}
 
-	if ch := sess.hookElicitReply.Get(); ch != nil {
-		ch <- reply
+	if front.replyCh != nil {
+		front.replyCh <- reply
 	} else {
 		log.WithFunc("claude.handleElicitationControl").Warnf(c.ctx, "no hook channel for elicitation reply, user=%s", sess.userID)
 	}
-	sess.elicitation.Clear()
 
 	if elicitAction == elicitDecline {
 		sess.pushResponse(&agent.Response{Text: "declined"})

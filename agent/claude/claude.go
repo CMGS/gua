@@ -150,12 +150,12 @@ func (c *ClaudeCode) Send(ctx context.Context, userID string, msg agent.Message)
 		return err
 	}
 
-	if perm := sess.permission.Get(); perm != nil {
-		sess.pushResponse(permissionResponse(perm))
+	if p, ok := sess.permQueue.Peek(); ok {
+		sess.pushResponse(permissionResponse(p.perm))
 		return nil
 	}
-	if elicit := sess.elicitation.Get(); elicit != nil {
-		sess.pushResponse(elicitationResponse(elicit))
+	if e, ok := sess.elicitQueue.Peek(); ok {
+		sess.pushResponse(elicitationResponse(e.elicit))
 		return nil
 	}
 	// In TUI menu mode, resend menu instead of forwarding to MCP.
@@ -183,11 +183,11 @@ func (c *ClaudeCode) Control(ctx context.Context, userID string, action types.Ac
 		return false, nil
 	}
 
-	if perm := sess.permission.Get(); perm != nil {
-		return true, c.handlePermissionControl(ctx, sess, action, perm)
+	if sess.permQueue.Len() > 0 {
+		return true, c.handlePermissionControl(ctx, sess, action)
 	}
-	if elicit := sess.elicitation.Get(); elicit != nil {
-		c.handleElicitationControl(ctx, sess, action, elicit)
+	if sess.elicitQueue.Len() > 0 {
+		c.handleElicitationControl(ctx, sess, action)
 		return true, nil
 	}
 	// TUI menu mode — all actions handled here.
@@ -341,8 +341,8 @@ func (c *ClaudeCode) Restart(ctx context.Context, userID string, flags map[strin
 		_ = sess.conn.Close()
 	}
 	sess.writer.Clear()
-	sess.permission.Clear()
-	sess.elicitation.Clear()
+	sess.drainPermQueue()
+	sess.drainElicitQueue()
 	sess.prompt.Clear()
 	sess.tuiMenu.Clear()
 

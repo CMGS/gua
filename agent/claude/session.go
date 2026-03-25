@@ -19,6 +19,18 @@ import (
 	"github.com/CMGS/gua/utils"
 )
 
+// pendingPerm holds a permission request and its reply channel.
+type pendingPerm struct {
+	perm    *protocol.Permission
+	replyCh chan protocol.Permission // nil = reply via bridge writeEnvelope
+}
+
+// pendingElicit holds an elicitation request and its reply channel.
+type pendingElicit struct {
+	elicit  *protocol.Elicitation
+	replyCh chan protocol.ElicitationReply
+}
+
 type userSession struct {
 	userID  string
 	workDir string
@@ -30,18 +42,16 @@ type userSession struct {
 
 	connReady chan struct{} // closed when bridge connects
 
-	writeMu     sync.Mutex // guards writeEnvelope (net.Conn.Write is not atomic for large messages)
-	writer      utils.SyncValue[io.Writer]
-	permission  utils.SyncValue[*protocol.Permission]
-	elicitation utils.SyncValue[*protocol.Elicitation]
-	prompt      utils.SyncValue[string]             // pending interactive/TUI menu prompt
-	tuiMenu     utils.SyncValue[bool]               // true when in TUI menu mode (e.g. /model)
-	pollCancel  utils.SyncValue[context.CancelFunc] // cancels previous TUI poll goroutine
-	respawning  utils.SyncValue[bool]               // true during Respawn, prevents bridge disconnect cleanup
+	writeMu    sync.Mutex // guards writeEnvelope (net.Conn.Write is not atomic for large messages)
+	writer     utils.SyncValue[io.Writer]
+	prompt     utils.SyncValue[string]             // pending interactive/TUI menu prompt
+	tuiMenu    utils.SyncValue[bool]               // true when in TUI menu mode (e.g. /model)
+	pollCancel utils.SyncValue[context.CancelFunc] // cancels previous TUI poll goroutine
+	respawning utils.SyncValue[bool]               // true during Respawn, prevents bridge disconnect cleanup
 
-	// Hook reply channels — set when a CC hook process is waiting for user decision.
-	hookPermReply   utils.SyncValue[chan protocol.Permission]
-	hookElicitReply utils.SyncValue[chan protocol.ElicitationReply]
+	// FIFO queues for concurrent hook requests (multiple hooks can fire simultaneously).
+	permQueue   utils.SyncQueue[pendingPerm]
+	elicitQueue utils.SyncQueue[pendingElicit]
 }
 
 func (s *userSession) close() {
@@ -76,6 +86,13 @@ func (s *userSession) writeEnvelope(typ string, payload any) error {
 	defer s.writeMu.Unlock()
 	return protocol.WriteEnvelope(w, typ, payload)
 }
+
+// drainPermQueue removes all pending permissions. Blocked hook goroutines
+// will exit when CC kills hook subprocesses (closing their connections).
+func (s *userSession) drainPermQueue() { s.permQueue.Drain() }
+
+// drainElicitQueue removes all pending elicitations.
+func (s *userSession) drainElicitQueue() { s.elicitQueue.Drain() }
 
 func (c *ClaudeCode) getOrCreateSession(ctx context.Context, userID string) (*userSession, error) {
 	if sess, ok := c.getSession(userID); ok {

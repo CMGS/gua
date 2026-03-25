@@ -92,9 +92,11 @@ func (p *presenter) ParseAction(input string) *types.Action {
 	lower := strings.ToLower(trimmed)
 
 	switch {
-	case lower == "/yes" || lower == "/y" || lower == "/ok" || lower == "/allow" || lower == "/enter":
+	case lower == "/yes" || lower == "/y" || lower == "/ok" || lower == "/allow" || lower == "/enter" ||
+		trimmed == "是" || trimmed == "好" || trimmed == "好的" || trimmed == "可以" || trimmed == "确认":
 		return &types.Action{Type: types.ActionConfirm}
-	case lower == "/no" || lower == "/n" || lower == "/cancel" || lower == "/deny":
+	case lower == "/no" || lower == "/n" || lower == "/cancel" || lower == "/deny" ||
+		trimmed == "不" || trimmed == "不要" || trimmed == "不行" || trimmed == "取消":
 		return &types.Action{Type: types.ActionDeny}
 	case strings.HasPrefix(lower, "/select "):
 		val := strings.TrimSpace(trimmed[len("/select "):])
