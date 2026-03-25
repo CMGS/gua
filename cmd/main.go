@@ -383,7 +383,7 @@ func watchNewAccounts(ctx context.Context, dir string, known map[string]bool, ba
 		logger.Warnf(ctx, "fsnotify init failed, new accounts require restart: %v", err)
 		return
 	}
-	defer watcher.Close()
+	defer func() { _ = watcher.Close() }()
 
 	if err := watcher.Add(dir); err != nil {
 		logger.Warnf(ctx, "watch %s failed: %v", dir, err)
