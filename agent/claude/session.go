@@ -184,8 +184,17 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	// (e.g. --dangerously-load-development-channels confirmation, project trust).
 	// The user should not see these — they are internal to the setup flow.
 	err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, bridgeConnTimeout)
+	if err != nil && continuing {
+		// --continue may fail if CC has no previous conversation.
+		// Retry without --continue.
+		logger.Infof(c.ctx, "retrying without --continue for user=%s", userID)
+		sess.connReady = make(chan struct{})
+		command = c.buildCommand(userID, false)
+		if respawnErr := c.rt.Respawn(ctx, proc, command); respawnErr == nil {
+			err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, bridgeConnTimeout)
+		}
+	}
 	if err != nil {
-		// timeout or canceled - log pane output for debugging
 		if pane, captureErr := c.rt.CaptureOutput(c.ctx, proc); captureErr == nil {
 			logger.Warnf(c.ctx, "pane output:\n%s", pane)
 		}
