@@ -7,8 +7,8 @@ import (
 	"io"
 	"net"
 	"os"
-	"sync"
 	"path/filepath"
+	"sync"
 
 	"github.com/projecteru2/core/log"
 
@@ -29,7 +29,7 @@ type userSession struct {
 
 	connReady chan struct{} // closed when bridge connects
 
-	writeMu     sync.Mutex                 // guards writeEnvelope (net.Conn.Write is not atomic for large messages)
+	writeMu     sync.Mutex // guards writeEnvelope (net.Conn.Write is not atomic for large messages)
 	writer      utils.SyncValue[io.Writer]
 	permission  utils.SyncValue[*protocol.Permission]
 	elicitation utils.SyncValue[*protocol.Elicitation]

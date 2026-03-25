@@ -14,24 +14,7 @@ type presenter struct{}
 // When toolName is empty (TUI menu), shows navigation hints.
 func (p *presenter) FormatPrompt(promptText string, options []string, toolName, description string) string {
 	if promptText != "" {
-		var b strings.Builder
-		if toolName != "" {
-			fmt.Fprintf(&b, "Claude 需要确认:\n\n%s\n\n", promptText)
-		} else {
-			fmt.Fprintf(&b, "%s\n\n", promptText)
-		}
-		if hints := optionHints(options); hints != "" {
-			fmt.Fprintf(&b, "%s\n", hints)
-		}
-		if toolName != "" {
-			b.WriteString("/yes 允许，/cancel 拒绝。")
-		} else {
-			if strings.Contains(promptText, "Enter to") {
-				b.WriteString("/yes 确认，")
-			}
-			b.WriteString("/cancel 返回。")
-		}
-		return b.String()
+		return formatPromptText(promptText, options, toolName)
 	}
 
 	if toolName != "" {
@@ -43,6 +26,29 @@ func (p *presenter) FormatPrompt(promptText string, options []string, toolName, 
 	}
 
 	return "Claude 正在等待确认。回复 /yes 或 /cancel。"
+}
+
+func formatPromptText(promptText string, options []string, toolName string) string {
+	var b strings.Builder
+	if toolName != "" {
+		fmt.Fprintf(&b, "Claude 需要确认:\n\n%s\n\n", promptText)
+	} else {
+		fmt.Fprintf(&b, "%s\n\n", promptText)
+	}
+
+	if hints := optionHints(options); hints != "" {
+		fmt.Fprintf(&b, "%s\n", hints)
+	}
+
+	if toolName != "" {
+		b.WriteString("/yes 允许，/cancel 拒绝。")
+	} else {
+		if strings.Contains(promptText, "Enter to") {
+			b.WriteString("/yes 确认，")
+		}
+		b.WriteString("/cancel 返回。")
+	}
+	return b.String()
 }
 
 // FormatError renders an error for WeChat.

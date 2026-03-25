@@ -13,11 +13,7 @@ import (
 )
 
 // CC CLI commands that trigger TUI menus via passthrough.
-var ccCLICommands = []string{
-	"/model", "/compact", "/fast", "/clear", "/cost", "/doctor",
-	"/help", "/init", "/login", "/logout", "/memory", "/review",
-	"/status", "/vim", "/effort", "/config", "/add-dir",
-}
+var ccCLICommands = []string{"/model", "/fast"}
 
 func (c *ClaudeCode) getUserFlag(userID, key string) string {
 	c.mu.RLock()
