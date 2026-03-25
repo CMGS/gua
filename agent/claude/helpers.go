@@ -216,6 +216,12 @@ func claudeLineFilter(line string) (keep bool, interactive bool) {
 		strings.Contains(line, "[ctx left:"):
 		return false, false
 
+	// CC spinner/progress noise.
+	case strings.Contains(line, "Tab to amend"),
+		strings.Contains(line, "Update available"),
+		strings.Trim(line, "✳✻✽✶✢·⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ") == "":
+		return false, false
+
 	// CC interactive indicators (moved from runtime — agent-specific).
 	case strings.Contains(line, "Enter to confirm"),
 		strings.Contains(line, "Esc to "):
