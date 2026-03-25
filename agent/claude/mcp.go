@@ -133,7 +133,10 @@ func (c *ClaudeCode) handleHookPermission(conn net.Conn, env *protocol.Envelope)
 	replyCh := make(chan protocol.Permission, 1)
 	perm := &hp.Permission
 	sess.permQueue.Push(pendingPerm{perm: perm, replyCh: replyCh})
-	sess.pushResponse(permissionResponse(perm))
+	// Only push the first prompt — subsequent ones are pushed after the user handles each one.
+	if sess.permQueue.Len() == 1 {
+		sess.pushResponse(permissionResponse(perm))
+	}
 
 	logger.Debugf(c.ctx, "hook permission request for user=%s tool=%s", hp.UserID, perm.ToolName)
 
@@ -171,7 +174,9 @@ func (c *ClaudeCode) handleHookElicitation(conn net.Conn, env *protocol.Envelope
 	replyCh := make(chan protocol.ElicitationReply, 1)
 	elicit := &he.Elicitation
 	sess.elicitQueue.Push(pendingElicit{elicit: elicit, replyCh: replyCh})
-	sess.pushResponse(elicitationResponse(elicit))
+	if sess.elicitQueue.Len() == 1 {
+		sess.pushResponse(elicitationResponse(elicit))
+	}
 
 	logger.Debugf(c.ctx, "hook elicitation for user=%s server=%s", he.UserID, elicit.ServerName)
 
@@ -227,13 +232,14 @@ func (c *ClaudeCode) readBridgeLoop(sess *userSession) {
 	}
 }
 
+// watchOutput keeps the pipe-pane FIFO alive for the session.
+// Interactive prompt detection is NOT done here — pipe-pane output from
+// TUI redraws is garbled (cursor positioning, no real whitespace).
+// All interactive detection goes through capture-pane poll (pollTUIMenu).
 func (c *ClaudeCode) watchOutput(ctx context.Context, sess *userSession) {
-	if err := c.rt.Watch(ctx, sess.proc, func(content string) {
-		prompt := runtime.CompactInteractivePrompt(content, claudeLineFilter)
-		if prompt != "" && prompt != sess.prompt.Get() {
-			sess.prompt.Set(prompt)
-			sess.pushResponse(interactiveResponse(prompt))
-		}
+	if err := c.rt.Watch(ctx, sess.proc, func(_ string) {
+		// Intentionally empty — Watch keeps the FIFO alive.
+		// Future: could be used for non-interactive streaming output.
 	}); err != nil && ctx.Err() == nil {
 		log.WithFunc("claude.watchOutput").Warnf(ctx, "watch ended for user=%s: %v", sess.userID, err)
 	}

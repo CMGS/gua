@@ -24,6 +24,8 @@ const (
 
 	bridgeConnTimeout  = 30 * time.Second
 	promptPollInterval = 2 * time.Second
+	hookTimeoutMS      = 300000 // 5 minutes, written to CC hook settings
+	responseBufSize    = 64     // per-user response channel buffer
 
 	behaviorAllow = "allow"
 	behaviorDeny  = "deny"
@@ -99,36 +101,6 @@ func New(ctx context.Context, opts ...Option) (*ClaudeCode, error) {
 	return c, nil
 }
 
-// WithClaudeCmd sets the path to the claude CLI binary.
-func WithClaudeCmd(cmd string) Option {
-	return func(c *ClaudeCode) { c.claudeCmd = cmd }
-}
-
-// WithBridgeBin sets the path to the bridge binary.
-func WithBridgeBin(bin string) Option {
-	return func(c *ClaudeCode) { c.bridgeBin = bin }
-}
-
-// WithModel sets the model for Claude Code.
-func WithModel(model string) Option {
-	return func(c *ClaudeCode) { c.model = model }
-}
-
-// WithRuntime sets the runtime container (tmux, screen, etc.) for hosting Claude sessions.
-func WithRuntime(rt runtime.Runtime) Option {
-	return func(c *ClaudeCode) { c.rt = rt }
-}
-
-// WithWorkDir sets the base working directory for sessions.
-func WithWorkDir(dir string) Option {
-	return func(c *ClaudeCode) { c.baseWorkDir = dir }
-}
-
-// WithClaudeMD sets the CLAUDE.md content written to each session workdir.
-func WithClaudeMD(content string) Option {
-	return func(c *ClaudeCode) { c.claudeMD = content }
-}
-
 // Name returns the agent identifier.
 func (c *ClaudeCode) Name() string { return "claude" }
 
@@ -140,6 +112,15 @@ func (c *ClaudeCode) getSession(userID string) (*userSession, bool) {
 	defer c.mu.RUnlock()
 	sess, ok := c.sessions[userID]
 	return sess, ok
+}
+
+func (c *ClaudeCode) getUserFlag(userID, key string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if flags, ok := c.userFlags[userID]; ok {
+		return flags[key]
+	}
+	return ""
 }
 
 // Send sends a message to the user's Claude Code session. Non-blocking.

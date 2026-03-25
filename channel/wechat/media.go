@@ -78,7 +78,7 @@ func DownloadMessageMedia(ctx context.Context, bot *libwechat.Bot, msg *wxtypes.
 
 // saveMedia writes data to a temp file and returns a MediaFile.
 func saveMedia(data []byte, ext string, mediaType types.MediaType, fileName string) (types.MediaFile, error) {
-	path := fmt.Sprintf("/tmp/gua-%s.%s", utils.ShortID(), ext) //nolint:gosec // matches filePathRegex in server/formatter.go
+	path := utils.TempPathRandom(ext)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return types.MediaFile{}, fmt.Errorf("write %s: %w", path, err)
 	}

@@ -7,10 +7,11 @@ import (
 
 	"github.com/CMGS/gua/agent"
 	"github.com/CMGS/gua/channel"
+	"github.com/CMGS/gua/utils"
 )
 
 var (
-	filePathRegex  = regexp.MustCompile(`/tmp/gua-[^\s"'\x60\]\)]+`)
+	filePathRegex  = utils.TempFileRegex()
 	blankLineRegex = regexp.MustCompile(`\n{3,}`)
 )
 
@@ -68,14 +69,15 @@ func ExtractFiles(text string) (string, []string) {
 	return cleaned, paths
 }
 
-// MergeFiles validates and deduplicates file paths.
+// MergeFiles deduplicates file paths. Paths are assumed to be pre-validated
+// (ExtractFiles already checks isSendableFile; agent Files are trusted).
 func MergeFiles(paths ...[]string) []string {
 	seen := map[string]struct{}{}
 	var merged []string
 
 	for _, group := range paths {
 		for _, p := range group {
-			if p == "" || !isSendableFile(p) {
+			if p == "" {
 				continue
 			}
 			if _, ok := seen[p]; ok {

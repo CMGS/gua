@@ -10,19 +10,11 @@ import (
 	"github.com/CMGS/gua/agent/claude/protocol"
 	"github.com/CMGS/gua/runtime"
 	"github.com/CMGS/gua/types"
+	"github.com/CMGS/gua/utils"
 )
 
 // CC CLI commands that trigger TUI menus via passthrough.
 var ccCLICommands = []string{"/model", "/fast"}
-
-func (c *ClaudeCode) getUserFlag(userID, key string) string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if flags, ok := c.userFlags[userID]; ok {
-		return flags[key]
-	}
-	return ""
-}
 
 func permissionResponse(perm *protocol.Permission) *agent.Response {
 	return &agent.Response{
@@ -208,8 +200,7 @@ func claudeLineFilter(line string) (keep bool, interactive bool) {
 	case strings.Contains(line, "Claude Code v"),
 		strings.Contains(line, "Listening for channel messages from:"),
 		strings.Contains(line, "Experimental · inbound messages"),
-		strings.HasPrefix(line, "/private/tmp/"),
-		strings.HasPrefix(line, "/tmp/"),
+		strings.HasPrefix(line, utils.TempDir()),
 		strings.HasPrefix(line, "← "),
 		strings.HasPrefix(line, "● "),
 		strings.HasPrefix(line, "⏺ "),

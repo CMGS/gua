@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/CMGS/gua/types"
+	"github.com/CMGS/gua/utils"
 )
 
 type presenter struct{}
@@ -18,20 +19,20 @@ func (p *presenter) FormatPrompt(promptText string, options []string, toolName, 
 	}
 
 	if toolName != "" {
-		text := "Claude 需要确认 " + toolName
+		text := "需要确认 " + toolName
 		if description != "" {
 			text += ": " + description
 		}
 		return text + "\n回复 /yes 允许，或 /no 拒绝。"
 	}
 
-	return "Claude 正在等待确认。回复 /yes 或 /cancel。"
+	return "正在等待确认。回复 /yes 或 /cancel。"
 }
 
 func formatPromptText(promptText string, options []string, toolName string) string {
 	var b strings.Builder
 	if toolName != "" {
-		fmt.Fprintf(&b, "Claude 需要确认:\n\n%s\n\n", promptText)
+		fmt.Fprintf(&b, "需要确认:\n\n%s\n\n", promptText)
 	} else {
 		fmt.Fprintf(&b, "%s\n\n", promptText)
 	}
@@ -74,10 +75,10 @@ func (p *presenter) FormatMediaAnnotation(mf types.MediaFile) string {
 
 // MediaInstructions returns WeChat-specific output rules for the Agent.
 func (p *presenter) MediaInstructions() string {
-	return `WeChat does not render Markdown — use plain text only.
-Rich content (code >5 lines, tables, SVG/Mermaid) must be written to /tmp/gua-<description>.<ext>.
+	return fmt.Sprintf(`WeChat does not render Markdown — use plain text only.
+Rich content (code >5 lines, tables, SVG/Mermaid) must be written to %s.
 Include the file path in your reply; the system sends it as an attachment.
-Short plain text can be returned directly.`
+Short plain text can be returned directly.`, utils.TempFileRule())
 }
 
 // FormatText returns text as-is for WeChat.

@@ -152,6 +152,11 @@ func (c *ClaudeCode) handlePermissionControl(_ context.Context, sess *userSessio
 	if behavior == behaviorDeny {
 		sess.pushResponse(&agent.Response{Text: "denied"})
 	}
+
+	// Push the next pending permission (if any) so the user sees it.
+	if next, ok := sess.permQueue.Peek(); ok {
+		sess.pushResponse(permissionResponse(next.perm))
+	}
 	return nil
 }
 
@@ -186,5 +191,9 @@ func (c *ClaudeCode) handleElicitationControl(_ context.Context, sess *userSessi
 
 	if elicitAction == elicitDecline {
 		sess.pushResponse(&agent.Response{Text: "declined"})
+	}
+
+	if next, ok := sess.elicitQueue.Peek(); ok {
+		sess.pushResponse(elicitationResponse(next.elicit))
 	}
 }

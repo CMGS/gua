@@ -149,7 +149,7 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 				"hooks": []map[string]any{{
 					"type":    "command",
 					"command": hookCmd("permission"),
-					"timeout": 300000,
+					"timeout": hookTimeoutMS,
 				}},
 			}},
 			"Elicitation": []map[string]any{{
@@ -157,7 +157,7 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 				"hooks": []map[string]any{{
 					"type":    "command",
 					"command": hookCmd("elicitation"),
-					"timeout": 300000,
+					"timeout": hookTimeoutMS,
 				}},
 			}},
 		},
@@ -170,7 +170,7 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	sess := &userSession{
 		userID:    userID,
 		workDir:   workDir,
-		outCh:     make(chan *agent.Response, 64),
+		outCh:     make(chan *agent.Response, responseBufSize),
 		cancel:    cancel,
 		connReady: make(chan struct{}),
 	}

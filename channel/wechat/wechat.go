@@ -160,7 +160,7 @@ func (w *WeChat) ShareQR(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch QR: %w", err)
 	}
-	path := fmt.Sprintf("/tmp/gua-share-%s.png", utils.ShortID()) //nolint:gosec // matches filePathRegex
+	path := utils.TempPath("share-"+utils.ShortID(), "png")
 	if err := goqrcode.WriteFile(qr.QRCodeImgContent, goqrcode.Medium, 512, path); err != nil {
 		return "", fmt.Errorf("generate QR image: %w", err)
 	}

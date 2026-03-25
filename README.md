@@ -57,6 +57,9 @@ All three dimensions are **fully decoupled via Go interfaces**. Adding a new cha
 
 ```bash
 make build
+
+# Check version
+./bin/gua-server --version
 ```
 
 ### Setup (one-time per WeChat account)
@@ -75,7 +78,8 @@ make build
   --agent claude \
   --work-dir /path/to/workspace \
   --bridge-bin ./bin/gua-bridge \
-  --model sonnet
+  --model sonnet \
+  --prompt ./my-custom-rules.md  # optional: appended to init prompt
 ```
 
 ### Account Management
@@ -124,15 +128,18 @@ make build
 | `/no` | Deny / reject (for permissions) |
 | `/cancel` | Cancel / exit menu (for TUI menus) |
 | `/select N` | Select option N in a menu |
+| 是 / 好 / 可以 | Voice-friendly confirm (same as `/yes`) |
+| 不 / 不要 / 取消 | Voice-friendly deny (same as `/no`) |
 
-`/no` and `/cancel` both map to the same action (deny); the distinction is UX — prompts show `/no` for permission approval and `/cancel` for TUI menu navigation.
+`/no` and `/cancel` both map to the same action (deny); the distinction is UX — prompts show `/no` for permission approval and `/cancel` for TUI menu navigation. Voice commands only take effect when there's an active prompt; otherwise they're sent as normal messages.
 
 ## Project Structure
 
 ```
 gua/
+├── version/            Build version info (injected via ldflags)
 ├── types/              Shared types (MediaFile, Action)
-├── utils/              Shared utilities (JSON, MIME, SyncValue)
+├── utils/              Shared utilities (JSON, MIME, SyncValue, SyncQueue, TempFile)
 ├── config/             Base prompt (security rules)
 ├── runtime/            Process container interface
 │   └── tmux/           tmux implementation
@@ -159,7 +166,7 @@ gua/
 
 **Presenter Pattern**: Channel-specific rendering is encapsulated in a `Presenter` interface. The same agent response can be rendered as plain text with `/select N` commands (WeChat), inline keyboard buttons (Telegram), or rich embeds (Discord). The agent layer produces structured data; the presenter decides how to display it.
 
-**Three-layer Prompt**: Init prompt = `config/base.md` (security rules) + agent prompt (agent-specific behavior) + channel prompt (channel-specific rules) + `presenter.MediaInstructions()` (media handling). Each layer is independently managed.
+**Four-layer Prompt**: Init prompt = `config/base.md` (security rules) + agent prompt (agent-specific behavior) + channel prompt (channel-specific rules) + `presenter.MediaInstructions()` (media handling) + optional user prompt (`--prompt` flag). Each layer is independently managed; user prompt has highest priority (appended last).
 
 ### Claude Code Implementation Details
 

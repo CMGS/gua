@@ -37,7 +37,8 @@ func (q *SyncQueue[T]) Pop() (T, bool) {
 		return zero, false
 	}
 	front := q.items[0]
-	q.items[0] = *new(T) // zero slot for GC
+	var zero T
+	q.items[0] = zero // zero slot for GC
 	q.items = q.items[1:]
 	return front, true
 }
@@ -49,7 +50,8 @@ func (q *SyncQueue[T]) Remove(match func(T) bool) bool {
 	defer q.mu.Unlock()
 	for i, item := range q.items {
 		if match(item) {
-			q.items[i] = *new(T)
+			var zero T
+			q.items[i] = zero
 			q.items = append(q.items[:i], q.items[i+1:]...)
 			return true
 		}
