@@ -105,9 +105,12 @@ make build
 
 | Command | Effect |
 |---|---|
-| `/yes` | Confirm / allow |
-| `/cancel` | Cancel / deny / exit menu |
+| `/yes` | Confirm / allow / enter |
+| `/no` | Deny / reject (for permissions) |
+| `/cancel` | Cancel / exit menu (for TUI menus) |
 | `/select N` | Select option N in a menu |
+
+`/no` and `/cancel` both map to the same action (deny); the distinction is UX — prompts show `/no` for permission approval and `/cancel` for TUI menu navigation.
 
 ## Project Structure
 

@@ -22,7 +22,7 @@ func (p *presenter) FormatPrompt(promptText string, options []string, toolName, 
 		if description != "" {
 			text += ": " + description
 		}
-		return text + "\n回复 /yes 允许，或 /cancel 拒绝。"
+		return text + "\n回复 /yes 允许，或 /no 拒绝。"
 	}
 
 	return "Claude 正在等待确认。回复 /yes 或 /cancel。"
@@ -41,7 +41,7 @@ func formatPromptText(promptText string, options []string, toolName string) stri
 	}
 
 	if toolName != "" {
-		b.WriteString("/yes 允许，/cancel 拒绝。")
+		b.WriteString("/yes 允许，/no 拒绝。")
 	} else {
 		if strings.Contains(promptText, "Enter to") {
 			b.WriteString("/yes 确认，")

@@ -26,9 +26,13 @@ import (
 )
 
 const (
-	defaultBackend = "wechat"
-	defaultAgent   = "claude"
-	defaultModel   = "sonnet"
+	defaultBackend   = "wechat"
+	defaultAgent     = "claude"
+	defaultModel     = "sonnet"
+	defaultClaudeCmd = "claude"
+
+	subcmdList   = "list"
+	subcmdRemove = "remove"
 )
 
 func main() {
@@ -210,7 +214,7 @@ func cmdUsers(ctx context.Context, args []string) int {
 		case args[i] == "--work-dir" && i+1 < len(args):
 			workDir = args[i+1]
 			i++
-		case args[i] == "list" || args[i] == "remove":
+		case args[i] == subcmdList || args[i] == subcmdRemove:
 			subcmd = args[i]
 		default:
 			if !strings.HasPrefix(args[i], "-") {
@@ -219,7 +223,7 @@ func cmdUsers(ctx context.Context, args []string) int {
 		}
 	}
 	if subcmd == "" {
-		subcmd = "list"
+		subcmd = subcmdList
 	}
 	if workDir == "" {
 		logger.Errorf(ctx, nil, "--work-dir is required")
@@ -229,7 +233,7 @@ func cmdUsers(ctx context.Context, args []string) int {
 	sessionsDir := filepath.Join(workDir, "sessions")
 
 	switch subcmd {
-	case "list":
+	case subcmdList:
 		entries, err := os.ReadDir(sessionsDir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -255,7 +259,7 @@ func cmdUsers(ctx context.Context, args []string) int {
 			fmt.Println("No users found.")
 		}
 
-	case "remove":
+	case subcmdRemove:
 		if len(positional) == 0 {
 			logger.Errorf(ctx, nil, "usage: gua-server users remove <user-id> --work-dir <path>")
 			return 1
