@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -182,22 +181,21 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 
 	logger.Infof(c.ctx, "spawned claude window=%s pane=%s user=%s workdir=%s", proc.ID, proc.PaneID, userID, workDir)
 
-	// Auto-confirm any interactive prompts that appear before the bridge connects
-	// (e.g. --dangerously-load-development-channels confirmation, project trust).
-	// The user should not see these — they are internal to the setup flow.
-	// If --continue was used, quickly check if CC exited (no conversation to resume).
-	// Retry without --continue before committing to the full AutoConfirmLoop timeout.
+	// Auto-confirm startup prompts (MCP trust, dev channels) before bridge connects.
+	timeout := bridgeConnTimeout
 	if continuing {
-		time.Sleep(3 * time.Second)
-		if pane, captureErr := c.rt.CaptureOutput(c.ctx, proc); captureErr == nil && strings.Contains(pane, "No conversation found") {
-			logger.Infof(c.ctx, "no previous conversation, retrying without --continue for user=%s", userID)
-			sess.connReady = make(chan struct{})
-			command = c.buildCommand(userID, false)
-			_ = c.rt.Respawn(ctx, proc, command)
+		timeout = 5 * time.Second // short timeout: --continue fails fast if no conversation
+	}
+	err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, timeout)
+	if err != nil && continuing {
+		// --continue failed (no previous conversation). Retry without it.
+		logger.Infof(c.ctx, "no previous conversation, restarting without --continue for user=%s", userID)
+		sess.connReady = make(chan struct{})
+		command = c.buildCommand(userID, false)
+		if respawnErr := c.rt.Respawn(ctx, proc, command); respawnErr == nil {
+			err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, bridgeConnTimeout)
 		}
 	}
-
-	err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, bridgeConnTimeout)
 	if err != nil {
 		if pane, captureErr := c.rt.CaptureOutput(c.ctx, proc); captureErr == nil {
 			logger.Warnf(c.ctx, "pane output:\n%s", pane)

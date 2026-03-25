@@ -75,6 +75,16 @@ func New(ctx context.Context, opts ...Option) (*ClaudeCode, error) {
 		return nil, fmt.Errorf("runtime is required: use WithRuntime option")
 	}
 
+	// Resolve bridgeBin to absolute path so it works from any session workdir.
+	if !filepath.IsAbs(c.bridgeBin) {
+		abs, err := filepath.Abs(c.bridgeBin)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("resolve bridge binary path: %w", err)
+		}
+		c.bridgeBin = abs
+	}
+
 	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("gua-%s.sock", utils.ShortID()))
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -154,6 +164,13 @@ func (c *ClaudeCode) Send(ctx context.Context, userID string, msg agent.Message)
 			sess.pushResponse(tuiMenuResponse(prompt))
 			return nil
 		}
+	}
+
+	// Wait for bridge to be connected before sending.
+	select {
+	case <-sess.connReady:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	return c.sendChannelEvent(sess, userID, msg)
