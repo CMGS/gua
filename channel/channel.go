@@ -32,6 +32,9 @@ type Channel interface {
 	Start(ctx context.Context, handler InboundHandler) error
 	Send(ctx context.Context, msg OutboundMessage) error
 	StartTyping(ctx context.Context, userID, replyToken string) (stop func())
+	// ShareQR returns a local file path to a shareable QR/invite image.
+	// Returns "" if not supported.
+	ShareQR(ctx context.Context) (string, error)
 	Presenter() Presenter
 }
 

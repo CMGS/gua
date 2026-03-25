@@ -47,6 +47,8 @@ func main() {
 		os.Exit(cmdSetup(ctx, os.Args[2:]))
 	case "start":
 		os.Exit(cmdStart(ctx, os.Args[2:]))
+	case "users":
+		os.Exit(cmdUsers(ctx, os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		printUsage(os.Stderr)
@@ -70,6 +72,7 @@ func printUsage(w *os.File) {
 	_, _ = fmt.Fprintln(w, "Commands:")
 	_, _ = fmt.Fprintln(w, "  setup    Setup backend authentication")
 	_, _ = fmt.Fprintln(w, "  start    Start the server")
+	_, _ = fmt.Fprintln(w, "  users    Manage user sessions (list, remove)")
 }
 
 func cmdSetup(ctx context.Context, args []string) int {
@@ -193,6 +196,90 @@ func runAccount(ctx context.Context, creds *types.Credentials, backendName, agen
 	default:
 		logger.Errorf(ctx, fmt.Errorf("unknown agent: %s", agentName), "account %s", botID)
 	}
+}
+
+func cmdUsers(ctx context.Context, args []string) int {
+	logger := log.WithFunc("cmd.users")
+
+	// Manual arg parsing: flag.Parse stops at the first non-flag, so
+	// "users list --work-dir /tmp" would never parse --work-dir.
+	var workDir, subcmd string
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--work-dir" && i+1 < len(args):
+			workDir = args[i+1]
+			i++
+		case args[i] == "list" || args[i] == "remove":
+			subcmd = args[i]
+		default:
+			if !strings.HasPrefix(args[i], "-") {
+				positional = append(positional, args[i])
+			}
+		}
+	}
+	if subcmd == "" {
+		subcmd = "list"
+	}
+	if workDir == "" {
+		logger.Errorf(ctx, nil, "--work-dir is required")
+		return 1
+	}
+
+	sessionsDir := filepath.Join(workDir, "sessions")
+
+	switch subcmd {
+	case "list":
+		entries, err := os.ReadDir(sessionsDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				fmt.Println("No users found.")
+				return 0
+			}
+			logger.Errorf(ctx, err, "read sessions dir")
+			return 1
+		}
+		found := false
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			found = true
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			fmt.Printf("  %s  (last modified: %s)\n", entry.Name(), info.ModTime().Format("2006-01-02 15:04"))
+		}
+		if !found {
+			fmt.Println("No users found.")
+		}
+
+	case "remove":
+		if len(positional) == 0 {
+			logger.Errorf(ctx, nil, "usage: gua-server users remove <user-id> --work-dir <path>")
+			return 1
+		}
+		userID := positional[0]
+		normalized := utils.NormalizeID(userID)
+		userDir := filepath.Join(sessionsDir, normalized)
+
+		if _, err := os.Stat(userDir); os.IsNotExist(err) {
+			userDir = filepath.Join(sessionsDir, userID)
+			if _, err := os.Stat(userDir); os.IsNotExist(err) {
+				logger.Errorf(ctx, nil, "user not found: %s", userID)
+				return 1
+			}
+		}
+
+		if err := os.RemoveAll(userDir); err != nil {
+			logger.Errorf(ctx, err, "remove user %s", userID)
+			return 1
+		}
+		fmt.Printf("Removed user: %s\n", userID)
+	}
+
+	return 0
 }
 
 func loadAllAccounts(ctx context.Context, dir string) ([]*types.Credentials, error) {

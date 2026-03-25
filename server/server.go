@@ -39,6 +39,7 @@ func New(ch channel.Channel, a agent.Agent) *Server {
 	s.commands = map[string]commandHandler{
 		"/whosyourdaddy": s.cmdYolo,
 		"/imyourdaddy":   s.cmdSafe,
+		"/share":         s.cmdShare,
 	}
 	return s
 }
@@ -202,6 +203,17 @@ func (s *Server) cmdYolo(ctx context.Context, msg channel.InboundMessage) *agent
 		return &agent.Response{Text: "already in yolo mode"}
 	}
 	return &agent.Response{Text: "yolo mode activated"}
+}
+
+func (s *Server) cmdShare(ctx context.Context, msg channel.InboundMessage) *agent.Response {
+	path, err := s.channel.ShareQR(ctx)
+	if err != nil {
+		return &agent.Response{Text: fmt.Sprintf("share failed: %v", err)}
+	}
+	if path == "" {
+		return &agent.Response{Text: "share not supported by this channel"}
+	}
+	return &agent.Response{Files: []string{path}}
 }
 
 func (s *Server) cmdSafe(ctx context.Context, msg channel.InboundMessage) *agent.Response {

@@ -9,6 +9,7 @@ import (
 
 	qrterminal "github.com/mdp/qrterminal/v3"
 	"github.com/projecteru2/core/log"
+	goqrcode "github.com/skip2/go-qrcode"
 
 	"github.com/CMGS/gua/channel"
 	libwechat "github.com/CMGS/gua/libc/wechat"
@@ -148,6 +149,19 @@ func (w *WeChat) StartTyping(ctx context.Context, userID, replyToken string) (st
 		return func() {}
 	}
 	return w.bot.StartTyping(ctx, userID, replyToken)
+}
+
+// ShareQR fetches the bot's QR code and saves it as a PNG image.
+func (w *WeChat) ShareQR(ctx context.Context) (string, error) {
+	qr, err := auth.FetchQRCode(ctx)
+	if err != nil {
+		return "", fmt.Errorf("fetch QR: %w", err)
+	}
+	path := fmt.Sprintf("/tmp/gua-share-%s.png", utils.ShortID()) //nolint:gosec // matches filePathRegex
+	if err := goqrcode.WriteFile(qr.QRCodeImgContent, goqrcode.Medium, 512, path); err != nil {
+		return "", fmt.Errorf("generate QR image: %w", err)
+	}
+	return path, nil
 }
 
 // Presenter returns the WeChat presenter for rendering responses.
