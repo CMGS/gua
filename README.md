@@ -19,7 +19,7 @@ Each user gets their own isolated AI session. No API keys required — use your 
 | **TUI menu** | Agent-defined (Claude Code: `capture-pane` boundary detection; `/select N` navigation) | Not handled | Full TUI: regex `UIPattern` top/bottom delimiters; inline keyboard |
 | **Media** | Channel-defined (WeChat: images, voice, video, files) | Text only | Text, voice, screenshots |
 | **Sharing** | `/share` generates QR/invite via Channel interface | Manual | Manual |
-| **User management** | CLI: `users list`, `users remove` | None | None |
+| **Management** | CLI: `accounts` (bot accounts), `sessions` (user sessions) | None | None |
 | **Architecture** | Agent / Channel / Runtime fully decoupled via interfaces | Agent abstraction (3 modes) but channel hardcoded | Monolithic (tmux + Telegram tightly coupled) |
 
 ## Architecture
@@ -78,14 +78,25 @@ make build
   --model sonnet
 ```
 
-### User Management
+### Account Management
 
 ```bash
-# List all users with sessions
-./bin/gua-server users --work-dir /path/to/workspace
+# List registered bot accounts (~/.gua/<backend>/accounts/)
+./bin/gua-server accounts list
+./bin/gua-server accounts list --backend wechat
+
+# Remove a bot account
+./bin/gua-server accounts remove <account-id>
+```
+
+### Session Management
+
+```bash
+# List user chat sessions (<work-dir>/sessions/)
+./bin/gua-server sessions list --work-dir /path/to/workspace
 
 # Remove a user's session data
-./bin/gua-server users remove <user-id> --work-dir /path/to/workspace
+./bin/gua-server sessions remove <user-id> --work-dir /path/to/workspace
 ```
 
 ### In-Chat Commands

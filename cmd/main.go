@@ -51,8 +51,10 @@ func main() {
 		os.Exit(cmdSetup(ctx, os.Args[2:]))
 	case "start":
 		os.Exit(cmdStart(ctx, os.Args[2:]))
-	case "users":
-		os.Exit(cmdUsers(ctx, os.Args[2:]))
+	case "accounts":
+		os.Exit(cmdAccounts(ctx, os.Args[2:]))
+	case "sessions":
+		os.Exit(cmdSessions(ctx, os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		printUsage(os.Stderr)
@@ -74,9 +76,10 @@ func printUsage(w *os.File) {
 	_, _ = fmt.Fprintln(w, "Usage: gua <command>")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Commands:")
-	_, _ = fmt.Fprintln(w, "  setup    Setup backend authentication")
-	_, _ = fmt.Fprintln(w, "  start    Start the server")
-	_, _ = fmt.Fprintln(w, "  users    Manage user sessions (list, remove)")
+	_, _ = fmt.Fprintln(w, "  setup      Setup backend authentication (QR code login)")
+	_, _ = fmt.Fprintln(w, "  start      Start the server")
+	_, _ = fmt.Fprintln(w, "  accounts   Manage bot accounts (list, remove)")
+	_, _ = fmt.Fprintln(w, "  sessions   Manage user chat sessions (list, remove)")
 }
 
 func cmdSetup(ctx context.Context, args []string) int {
@@ -202,8 +205,85 @@ func runAccount(ctx context.Context, creds *types.Credentials, backendName, agen
 	}
 }
 
-func cmdUsers(ctx context.Context, args []string) int {
-	logger := log.WithFunc("cmd.users")
+func cmdAccounts(ctx context.Context, args []string) int {
+	logger := log.WithFunc("cmd.accounts")
+
+	var backend, subcmd string
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--backend" && i+1 < len(args):
+			backend = args[i+1]
+			i++
+		case args[i] == subcmdList || args[i] == subcmdRemove:
+			subcmd = args[i]
+		default:
+			if !strings.HasPrefix(args[i], "-") {
+				positional = append(positional, args[i])
+			}
+		}
+	}
+	if subcmd == "" {
+		subcmd = subcmdList
+	}
+	if backend == "" {
+		backend = defaultBackend
+	}
+
+	dir := accountsDir(backend)
+
+	switch subcmd {
+	case subcmdList:
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				fmt.Println("No accounts found. Run 'setup' first.")
+				return 0
+			}
+			logger.Errorf(ctx, err, "read accounts dir")
+			return 1
+		}
+		found := false
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			found = true
+			name := strings.TrimSuffix(entry.Name(), ".json")
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			fmt.Printf("  %s  (created: %s)\n", name, info.ModTime().Format("2006-01-02 15:04"))
+		}
+		if !found {
+			fmt.Println("No accounts found. Run 'setup' first.")
+		}
+
+	case subcmdRemove:
+		if len(positional) == 0 {
+			logger.Errorf(ctx, nil, "usage: gua-server accounts remove <account-id> [--backend wechat]")
+			return 1
+		}
+		accountID := positional[0]
+		normalized := utils.NormalizeID(accountID)
+		path := filepath.Join(dir, normalized+".json")
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			logger.Errorf(ctx, nil, "account not found: %s", accountID)
+			return 1
+		}
+		if err := os.Remove(path); err != nil {
+			logger.Errorf(ctx, err, "remove account %s", accountID)
+			return 1
+		}
+		fmt.Printf("Removed account: %s\n", accountID)
+	}
+
+	return 0
+}
+
+func cmdSessions(ctx context.Context, args []string) int {
+	logger := log.WithFunc("cmd.sessions")
 
 	// Manual arg parsing: flag.Parse stops at the first non-flag, so
 	// "users list --work-dir /tmp" would never parse --work-dir.
