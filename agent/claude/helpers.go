@@ -3,6 +3,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/CMGS/gua/agent"
@@ -10,6 +11,13 @@ import (
 	"github.com/CMGS/gua/runtime"
 	"github.com/CMGS/gua/types"
 )
+
+// CC CLI commands that trigger TUI menus via passthrough.
+var ccCLICommands = []string{
+	"/model", "/compact", "/fast", "/clear", "/cost", "/doctor",
+	"/help", "/init", "/login", "/logout", "/memory", "/review",
+	"/status", "/vim", "/effort", "/config", "/add-dir",
+}
 
 func (c *ClaudeCode) getUserFlag(userID, key string) string {
 	c.mu.RLock()
@@ -51,6 +59,14 @@ func elicitationResponse(elicit *protocol.Elicitation) *agent.Response {
 	}
 }
 
+func tuiMenuResponse(menu string) *agent.Response {
+	return &agent.Response{
+		Prompt:     agent.PromptTUIMenu,
+		PromptText: menu,
+		Options:    runtime.ExtractOptions(menu),
+	}
+}
+
 func actionToKeys(action types.Action, prompt string) []string {
 	lower := strings.ToLower(prompt)
 	hasYN := strings.Contains(lower, "y/n")
@@ -76,7 +92,121 @@ func actionToKeys(action types.Action, prompt string) []string {
 	}
 }
 
+// tuiMenuSelectKeys maps a select action to TUI navigation keys.
+// Cursor menus (❯) use arrow keys; text menus use number+Enter.
+func tuiMenuSelectKeys(action types.Action, prompt string) []string {
+	if current := findCurrentOption(prompt); current > 0 {
+		target, _ := strconv.Atoi(action.Value)
+		if target <= 0 || target == current {
+			return nil
+		}
+		delta := target - current
+		key, n := "Down", delta
+		if delta < 0 {
+			key, n = "Up", -delta
+		}
+		keys := make([]string, n)
+		for i := range keys {
+			keys[i] = key
+		}
+		return keys
+	}
+	return []string{action.Value, "Enter"}
+}
+
+// extractTUIMenu extracts CC TUI menu content from capture-pane output.
+// Bottom boundary: line containing "Esc to " (always present in CC menus).
+// Top boundary: separator line (─────) above it.
+// Returns content between boundaries (inclusive of bottom, exclusive of separator).
+func extractTUIMenu(pane string) string {
+	lines := strings.Split(pane, "\n")
+
+	// Find bottom boundary: last "Esc to " line.
+	escLine := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "Esc to ") {
+			escLine = i
+			break
+		}
+	}
+	if escLine < 0 {
+		return ""
+	}
+
+	// Find top boundary: separator above the Esc line.
+	// CC uses both pure separators (─────) and decorated ones (──Title── ...).
+	sepLine := -1
+	for i := escLine - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if runtime.IsSeparatorLine(trimmed) || strings.HasPrefix(trimmed, "──") {
+			sepLine = i
+			break
+		}
+	}
+	if sepLine < 0 || sepLine >= escLine-1 {
+		return ""
+	}
+
+	// Extract and clean menu content between separator and Esc line (inclusive).
+	var kept []string
+	for _, raw := range lines[sepLine+1 : escLine+1] {
+		line := strings.TrimRight(raw, "\r ")
+		if line != "" {
+			kept = append(kept, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// captureStatusText extracts the CC command result from pane output.
+// Scans from bottom to find the last "❯ /command" line, then extracts
+// the "⎿  <result>" line below it.
+func captureStatusText(pane string) string {
+	lines := strings.Split(pane, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "❯") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "❯"))
+		if !strings.HasPrefix(rest, "/") {
+			continue
+		}
+		// Found command line — look below for ⎿ response.
+		for j := i + 1; j < len(lines); j++ {
+			resp := strings.TrimSpace(lines[j])
+			if !strings.HasPrefix(resp, "⎿") {
+				continue
+			}
+			stripped := strings.TrimSpace(strings.TrimPrefix(resp, "⎿"))
+			if stripped != "" {
+				return stripped
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
+// findCurrentOption extracts the currently selected option number from a TUI
+// cursor menu (❯ indicator). Returns 0 if no cursor found.
+func findCurrentOption(prompt string) int {
+	for line := range strings.SplitSeq(prompt, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "❯") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯"))
+		if n := runtime.OptionLineNumber(rest); n != "" {
+			num, _ := strconv.Atoi(n)
+			return num
+		}
+	}
+	return 0
+}
+
 // claudeLineFilter filters terminal lines specific to Claude Code's TUI.
+// Returns (keep, interactive) — interactive=true triggers prompt detection.
 func claudeLineFilter(line string) (keep bool, interactive bool) {
 	switch {
 	case strings.Contains(line, "Claude Code v"),
@@ -85,16 +215,27 @@ func claudeLineFilter(line string) (keep bool, interactive bool) {
 		strings.HasPrefix(line, "/private/tmp/"),
 		strings.HasPrefix(line, "/tmp/"),
 		strings.HasPrefix(line, "← "),
-		strings.HasPrefix(line, "● "):
+		strings.HasPrefix(line, "● "),
+		strings.HasPrefix(line, "⏺ "),
+		strings.Contains(line, "[ctx left:"):
 		return false, false
-	case strings.HasPrefix(line, "❯ "):
-		trimmed := strings.TrimSpace(strings.TrimPrefix(line, "❯ "))
-		return trimmed != "", false
+
+	// CC interactive indicators (moved from runtime — agent-specific).
+	case strings.Contains(line, "Enter to confirm"),
+		strings.Contains(line, "Esc to "):
+		return true, true
+
+	case strings.HasPrefix(line, "❯"):
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "❯"))
+		return rest != "" && !strings.HasPrefix(rest, "/"), false
 	}
 
-	// Strip Claude box-drawing decorations.
-	stripped := strings.TrimLeft(line, "⎿│└├┌─> ")
-	stripped = strings.TrimSpace(stripped)
+	// Filter box-drawing response lines (⎿ etc.) — previous command output, not menu.
+	if len(line) >= 3 && strings.ContainsAny(line[:min(len(line), 4)], "⎿│└├┌") {
+		return false, false
+	}
+
+	stripped := strings.TrimSpace(line)
 	if stripped == "" || strings.HasPrefix(stripped, "/") {
 		return false, false
 	}

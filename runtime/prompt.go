@@ -1,6 +1,12 @@
 package runtime
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+// ansiRegex matches ANSI escape sequences (CSI, OSC, etc.).
+var ansiRegex = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07]*\x07)`)
 
 // LineFilter decides whether a terminal line should be kept and whether
 // it indicates an interactive prompt. Implementations are agent-specific
@@ -10,6 +16,7 @@ type LineFilter func(line string) (keep bool, interactive bool)
 // CompactInteractivePrompt extracts interactive prompt content from terminal output.
 // The filter decides which lines to keep/discard per agent.
 func CompactInteractivePrompt(pane string, filter LineFilter) string {
+	pane = ansiRegex.ReplaceAllString(pane, "")
 	pane = strings.ReplaceAll(pane, "\u00a0", " ")
 	lines := strings.Split(pane, "\n")
 	filtered := make([]string, 0, len(lines))
@@ -75,18 +82,13 @@ func IsSeparatorLine(line string) bool {
 	return strings.Trim(line, "─-═━") == ""
 }
 
-// ExtractOptions parses numbered options or y/n indicators from a prompt.
+// ExtractOptions parses numbered options from a prompt.
 func ExtractOptions(prompt string) []string {
 	var opts []string
-
 	for raw := range strings.SplitSeq(prompt, "\n") {
 		if n := OptionLineNumber(strings.TrimSpace(raw)); n != "" {
 			opts = append(opts, n)
 		}
-	}
-
-	if len(opts) == 0 && hasYNIndicator(prompt) {
-		opts = []string{"yes", "no"}
 	}
 	return opts
 }
@@ -109,14 +111,7 @@ func normalizePromptLine(raw string, filter LineFilter) (line string, keep bool,
 		return "", false, false
 	}
 
-	// Universal interactive indicators.
-	if strings.Contains(line, "Enter to confirm") ||
-		strings.Contains(line, "Esc to cancel") ||
-		hasYNIndicator(line) {
-		return line, true, true
-	}
-
-	// Agent-specific filter.
+	// Agent-specific filter handles ALL interactive detection.
 	if filter != nil {
 		k, i := filter(line)
 		if !k {
@@ -132,9 +127,4 @@ func normalizePromptLine(raw string, filter LineFilter) (line string, keep bool,
 	}
 
 	return line, true, false
-}
-
-func hasYNIndicator(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.Contains(lower, "y/n")
 }

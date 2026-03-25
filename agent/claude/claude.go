@@ -122,6 +122,9 @@ func WithClaudeMD(content string) Option {
 // Name returns the agent identifier.
 func (c *ClaudeCode) Name() string { return "claude" }
 
+// CLICommands returns CC CLI commands that trigger TUI menus via passthrough.
+func (c *ClaudeCode) CLICommands() []string { return ccCLICommands }
+
 func (c *ClaudeCode) getSession(userID string) (*userSession, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -138,13 +141,19 @@ func (c *ClaudeCode) Send(ctx context.Context, userID string, msg agent.Message)
 	}
 
 	if perm := sess.permission.Get(); perm != nil {
-		// pending permission — push it again so user sees it
 		sess.pushResponse(permissionResponse(perm))
 		return nil
 	}
 	if elicit := sess.elicitation.Get(); elicit != nil {
 		sess.pushResponse(elicitationResponse(elicit))
 		return nil
+	}
+	// In TUI menu mode, resend menu instead of forwarding to MCP.
+	if sess.tuiMenu.Get() {
+		if prompt := sess.prompt.Get(); prompt != "" {
+			sess.pushResponse(tuiMenuResponse(prompt))
+			return nil
+		}
 	}
 
 	return c.sendChannelEvent(sess, userID, msg)
@@ -160,17 +169,76 @@ func (c *ClaudeCode) Control(ctx context.Context, userID string, action types.Ac
 	if perm := sess.permission.Get(); perm != nil {
 		return true, c.handlePermissionControl(ctx, sess, action, perm)
 	}
-
 	if elicit := sess.elicitation.Get(); elicit != nil {
 		c.handleElicitationControl(ctx, sess, action, elicit)
 		return true, nil
 	}
-
+	// TUI menu mode — all actions handled here.
+	if sess.tuiMenu.Get() {
+		return true, c.handleTUIMenuControl(ctx, sess, action)
+	}
 	if sess.prompt.Get() != "" {
 		return true, c.handleInteractiveControl(ctx, sess, action)
 	}
 
 	return false, nil
+}
+
+// RawInput sends text directly to the agent's terminal, bypassing MCP.
+// Polls capture-pane for TUI menu response.
+func (c *ClaudeCode) RawInput(ctx context.Context, userID string, input string) error {
+	sess, ok := c.getSession(userID)
+	if !ok {
+		return fmt.Errorf("no active session for user %s", userID)
+	}
+	if err := c.rt.SendInput(ctx, sess.proc, input, "Enter"); err != nil {
+		return err
+	}
+	c.startTUIMenuPoll(ctx, sess)
+	return nil
+}
+
+// startTUIMenuPoll cancels any previous poll goroutine and starts a new one.
+func (c *ClaudeCode) startTUIMenuPoll(ctx context.Context, sess *userSession) {
+	if cancel := sess.pollCancel.Get(); cancel != nil {
+		cancel()
+	}
+	pollCtx, cancel := context.WithCancel(ctx)
+	sess.pollCancel.Set(cancel)
+	go c.pollTUIMenu(pollCtx, sess)
+}
+
+// pollTUIMenu polls capture-pane for a CC TUI menu.
+// If no menu found after polling, captures status text as feedback.
+func (c *ClaudeCode) pollTUIMenu(ctx context.Context, sess *userSession) {
+	time.Sleep(500 * time.Millisecond)
+	for range 10 {
+		if ctx.Err() != nil {
+			return
+		}
+		pane, err := c.rt.CaptureOutput(ctx, sess.proc)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		menu := extractTUIMenu(pane)
+		if menu == "" {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		sess.tuiMenu.Set(true)
+		sess.prompt.Set(menu)
+		sess.pushResponse(tuiMenuResponse(menu))
+		return
+	}
+	// No menu found — command completed without TUI. Send status text.
+	sess.tuiMenu.Clear()
+	sess.prompt.Clear()
+	if pane, err := c.rt.CaptureOutput(ctx, sess.proc); err == nil {
+		if status := captureStatusText(pane); status != "" {
+			sess.pushResponse(&agent.Response{Text: status})
+		}
+	}
 }
 
 // Subscribe returns a channel that receives all responses for a user.
@@ -259,6 +327,7 @@ func (c *ClaudeCode) Restart(ctx context.Context, userID string, flags map[strin
 	sess.permission.Clear()
 	sess.elicitation.Clear()
 	sess.prompt.Clear()
+	sess.tuiMenu.Clear()
 
 	c.mu.Lock()
 	sess.connReady = make(chan struct{})

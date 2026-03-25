@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"path/filepath"
 
 	"github.com/projecteru2/core/log"
@@ -28,11 +29,14 @@ type userSession struct {
 
 	connReady chan struct{} // closed when bridge connects
 
+	writeMu     sync.Mutex                 // guards writeEnvelope (net.Conn.Write is not atomic for large messages)
 	writer      utils.SyncValue[io.Writer]
 	permission  utils.SyncValue[*protocol.Permission]
 	elicitation utils.SyncValue[*protocol.Elicitation]
-	prompt      utils.SyncValue[string] // pending interactive prompt from runtime
-	respawning  utils.SyncValue[bool]   // true during Respawn, prevents bridge disconnect cleanup
+	prompt      utils.SyncValue[string]             // pending interactive/TUI menu prompt
+	tuiMenu     utils.SyncValue[bool]               // true when in TUI menu mode (e.g. /model)
+	pollCancel  utils.SyncValue[context.CancelFunc] // cancels previous TUI poll goroutine
+	respawning  utils.SyncValue[bool]               // true during Respawn, prevents bridge disconnect cleanup
 
 	// Hook reply channels — set when a CC hook process is waiting for user decision.
 	hookPermReply   utils.SyncValue[chan protocol.Permission]
@@ -67,6 +71,8 @@ func (s *userSession) writeEnvelope(typ string, payload any) error {
 	if w == nil {
 		return fmt.Errorf("session not connected")
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	return protocol.WriteEnvelope(w, typ, payload)
 }
 

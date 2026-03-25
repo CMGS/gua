@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/CMGS/gua/agent"
 	"github.com/CMGS/gua/channel"
+	"github.com/CMGS/gua/types"
 )
 
 const maxConcurrent = 32
@@ -82,9 +84,9 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 		return
 	}
 
-	// 2. Control actions — only consumed when agent has an active prompt.
+	// 2. Control actions and agent CLI commands.
 	if len(msg.MediaFiles) == 0 {
-		if handled := s.tryControl(ctx, msg, presenter, trimmed); handled {
+		if handled := s.handleAction(ctx, msg, presenter, trimmed); handled {
 			return
 		}
 	}
@@ -95,8 +97,7 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 	agentMsg := FormatInbound(msg, presenter)
 	if err := s.agent.Send(ctx, msg.SenderID, agentMsg); err != nil {
 		stopTyping()
-		logger := log.WithFunc("server.handleInbound")
-		logger.Warnf(ctx, "send to agent for %s: %v", msg.SenderID, err)
+		log.WithFunc("server.handleInbound").Warnf(ctx, "send to agent for %s: %v", msg.SenderID, err)
 		s.sendText(ctx, msg, presenter.FormatError(err))
 		return
 	}
@@ -105,20 +106,47 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 	s.ensureResponseLoop(ctx, msg.SenderID, stopTyping)
 }
 
-// tryControl attempts to dispatch a control action parsed from the input.
-// Returns true if the message was consumed.
-func (s *Server) tryControl(ctx context.Context, msg channel.InboundMessage, presenter channel.Presenter, trimmed string) bool {
+// handleAction processes control actions and agent CLI commands.
+// Returns true if the message was handled.
+func (s *Server) handleAction(ctx context.Context, msg channel.InboundMessage, presenter channel.Presenter, trimmed string) bool {
 	action := presenter.ParseAction(trimmed)
 	if action == nil {
 		return false
 	}
 
+	// Passthrough: check agent CLI whitelist.
+	if action.Type == types.ActionPassthrough {
+		fields := strings.Fields(action.Value)
+		if len(fields) == 0 {
+			return false
+		}
+		cmd := fields[0]
+		if !s.isAgentCLICommand(cmd) {
+			return false // not whitelisted → treat as normal message
+		}
+		stopTyping := s.channel.StartTyping(ctx, msg.SenderID, msg.ReplyToken)
+		if err := s.agent.RawInput(ctx, msg.SenderID, action.Value); err != nil {
+			stopTyping()
+			s.sendText(ctx, msg, presenter.FormatError(err))
+		} else {
+			s.ensureResponseLoop(ctx, msg.SenderID, stopTyping)
+		}
+		return true
+	}
+
+	// Control: only consumed when agent has an active prompt.
 	handled, err := s.agent.Control(ctx, msg.SenderID, *action)
 	if err != nil {
 		s.sendText(ctx, msg, presenter.FormatError(err))
 		return true
 	}
 	return handled
+}
+
+func (s *Server) isAgentCLICommand(cmd string) bool {
+	return slices.ContainsFunc(s.agent.CLICommands(), func(c string) bool {
+		return strings.EqualFold(cmd, c)
+	})
 }
 
 func (s *Server) ensureResponseLoop(ctx context.Context, userID string, stopTyping func()) {

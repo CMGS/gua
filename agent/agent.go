@@ -15,6 +15,7 @@ const (
 	PromptPermission  // permission approval needed
 	PromptInteractive // terminal interactive prompt (numbered options, y/n)
 	PromptElicitation // MCP elicitation request (accept/decline)
+	PromptTUIMenu     // TUI cursor menu from agent CLI command (/model, /fast)
 )
 
 // PermissionInfo carries details about a permission request from the agent.
@@ -55,6 +56,10 @@ type Agent interface {
 	Subscribe(userID string) <-chan *Response
 	// Restart restarts the user's session with new flags.
 	Restart(ctx context.Context, userID string, flags map[string]string) (bool, error)
+	// RawInput sends text directly to the agent's terminal (bypasses MCP).
+	RawInput(ctx context.Context, userID string, input string) error
+	// CLICommands returns the agent's CLI command whitelist (e.g. /model, /fast).
+	CLICommands() []string
 	Close(userID string) error
 	CloseAll() error
 }

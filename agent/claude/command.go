@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/projecteru2/core/log"
 
@@ -55,6 +56,66 @@ func (c *ClaudeCode) handleInteractiveControl(ctx context.Context, sess *userSes
 	}
 	sess.prompt.Clear()
 	return nil
+}
+
+func (c *ClaudeCode) handleTUIMenuControl(ctx context.Context, sess *userSession, action types.Action) error {
+	prompt := sess.prompt.Get()
+
+	switch action.Type {
+	case types.ActionDeny:
+		// /cancel → Esc → exit menu
+		if err := c.rt.SendInput(ctx, sess.proc, "Escape"); err != nil {
+			return err
+		}
+		sess.tuiMenu.Clear()
+		sess.prompt.Clear()
+		go c.pollTUIMenuExit(ctx, sess)
+		return nil
+
+	case types.ActionConfirm:
+		// /yes → Enter (only when menu has "Enter to")
+		if !strings.Contains(prompt, "Enter to") {
+			sess.pushResponse(tuiMenuResponse(prompt))
+			return nil
+		}
+		if err := c.rt.SendInput(ctx, sess.proc, "Enter"); err != nil {
+			return err
+		}
+		sess.tuiMenu.Clear()
+		sess.prompt.Clear()
+		go c.pollTUIMenuExit(ctx, sess)
+		return nil
+
+	case types.ActionSelect:
+		keys := tuiMenuSelectKeys(action, prompt)
+		if keys == nil {
+			sess.pushResponse(tuiMenuResponse(prompt))
+			return nil
+		}
+		if err := c.rt.SendInput(ctx, sess.proc, keys...); err != nil {
+			return err
+		}
+		sess.prompt.Clear()
+		c.startTUIMenuPoll(ctx, sess)
+		return nil
+
+	default:
+		// Unrecognized action → resend menu
+		sess.pushResponse(tuiMenuResponse(prompt))
+		return nil
+	}
+}
+
+// pollTUIMenuExit captures status text after exiting a TUI menu.
+func (c *ClaudeCode) pollTUIMenuExit(ctx context.Context, sess *userSession) {
+	time.Sleep(300 * time.Millisecond)
+	pane, err := c.rt.CaptureOutput(ctx, sess.proc)
+	if err != nil {
+		return
+	}
+	if status := captureStatusText(pane); status != "" {
+		sess.pushResponse(&agent.Response{Text: status})
+	}
 }
 
 func (c *ClaudeCode) handlePermissionControl(_ context.Context, sess *userSession, action types.Action, perm *protocol.Permission) error {

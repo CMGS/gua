@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,10 +116,12 @@ func (t *Tmux) Watch(ctx context.Context, proc *runtime.Process, handler runtime
 
 	window := make([]byte, 0, watchWindowSize*2)
 	buf := make([]byte, 4096)
+	hasData := false
 
 	for {
 		n, readErr := f.Read(buf)
 		if n > 0 {
+			hasData = true
 			window = append(window, buf[:n]...)
 			if len(window) > watchWindowSize {
 				window = window[len(window)-watchWindowSize:]
@@ -129,7 +132,8 @@ func (t *Tmux) Watch(ctx context.Context, proc *runtime.Process, handler runtime
 			handler(string(window))
 		}
 		if readErr != nil {
-			if errors.Is(readErr, syscall.EAGAIN) {
+			// EAGAIN: no data yet (Linux). EOF before data: writer not connected (macOS).
+			if errors.Is(readErr, syscall.EAGAIN) || (!hasData && errors.Is(readErr, io.EOF)) {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}

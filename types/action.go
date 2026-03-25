@@ -4,10 +4,11 @@ package types
 type ActionType int
 
 const (
-	ActionNone    ActionType = iota
-	ActionConfirm            // yes/allow/ok
-	ActionDeny               // no/deny/cancel
-	ActionSelect             // numbered selection (1,2,3...)
+	ActionNone        ActionType = iota
+	ActionConfirm                // yes/allow/ok/enter
+	ActionDeny                   // no/deny/cancel
+	ActionSelect                 // /select N — numbered selection
+	ActionPassthrough            // forward raw input to agent terminal
 )
 
 // Action is a platform-agnostic control action parsed from user input.
