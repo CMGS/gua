@@ -8,7 +8,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/projecteru2/core/log"
 
@@ -183,17 +185,19 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	// Auto-confirm any interactive prompts that appear before the bridge connects
 	// (e.g. --dangerously-load-development-channels confirmation, project trust).
 	// The user should not see these — they are internal to the setup flow.
-	err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, bridgeConnTimeout)
-	if err != nil && continuing {
-		// --continue may fail if CC has no previous conversation.
-		// Retry without --continue.
-		logger.Infof(c.ctx, "retrying without --continue for user=%s", userID)
-		sess.connReady = make(chan struct{})
-		command = c.buildCommand(userID, false)
-		if respawnErr := c.rt.Respawn(ctx, proc, command); respawnErr == nil {
-			err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, bridgeConnTimeout)
+	// If --continue was used, quickly check if CC exited (no conversation to resume).
+	// Retry without --continue before committing to the full AutoConfirmLoop timeout.
+	if continuing {
+		time.Sleep(3 * time.Second)
+		if pane, captureErr := c.rt.CaptureOutput(c.ctx, proc); captureErr == nil && strings.Contains(pane, "No conversation found") {
+			logger.Infof(c.ctx, "no previous conversation, retrying without --continue for user=%s", userID)
+			sess.connReady = make(chan struct{})
+			command = c.buildCommand(userID, false)
+			_ = c.rt.Respawn(ctx, proc, command)
 		}
 	}
+
+	err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, bridgeConnTimeout)
 	if err != nil {
 		if pane, captureErr := c.rt.CaptureOutput(c.ctx, proc); captureErr == nil {
 			logger.Warnf(c.ctx, "pane output:\n%s", pane)
