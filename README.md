@@ -45,15 +45,35 @@ All three dimensions are **fully decoupled via Go interfaces**. Adding a new cha
 
 ### Prerequisites
 
-**Core:**
-- Go 1.24+
-
-**For the current implementation (Claude Code + tmux + WeChat):**
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - tmux
-- A WeChat account registered via [OpenClaw iLink](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin-cli)
 
-### Build
+### Install (Linux)
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/CMGS/gua/refs/heads/master/scripts/install.sh | bash
+```
+
+This will:
+- Download and install `gua-server` + `gua-bridge` to `/usr/bin/`
+- Create a systemd service (`gua.service`)
+- Set up work directory at `~/.gua/workspace/`
+
+For a specific version: `GUA_VERSION=0.2 curl ... | bash`
+
+### Install (macOS)
+
+Download from [releases](https://github.com/CMGS/gua/releases) and extract manually:
+
+```bash
+# Apple Silicon
+curl -sSfL https://github.com/CMGS/gua/releases/download/v0.1/gua_0.1_Darwin_arm64.tar.gz | tar xz
+sudo mv gua-server gua-bridge /usr/local/bin/
+```
+
+### Build from Source
+
+Requires Go 1.24+.
 
 ```bash
 make build
@@ -73,11 +93,16 @@ make build
 ### Start
 
 ```bash
-./bin/gua-server start \
+# If installed via install.sh:
+sudo systemctl start gua
+sudo systemctl enable gua  # auto-start on boot
+
+# Or run directly:
+gua-server start \
   --backend wechat \
   --agent claude \
-  --work-dir /path/to/workspace \
-  --bridge-bin ./bin/gua-bridge \
+  --work-dir ~/.gua/workspace \
+  --bridge-bin /usr/bin/gua-bridge \
   --model sonnet \
   --prompt ./my-custom-rules.md  # optional: appended to init prompt
 ```
@@ -152,7 +177,8 @@ gua/
 │   └── wechat/         WeChat implementation
 ├── libc/wechat/        WeChat iLink protocol library
 ├── server/             Server orchestration (Channel ↔ Agent routing)
-├── cmd/                CLI entry point
+├── cmd/                CLI entry point (setup, start, accounts, sessions)
+├── scripts/            Install scripts (Linux systemd setup)
 └── bot/                Reference implementations
     ├── weclaw/         WeChat + Claude (ACP/CLI/HTTP) — Go
     └── ccbot/          Telegram + Claude Code (tmux + JSONL) — Python
