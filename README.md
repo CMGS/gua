@@ -45,9 +45,13 @@ All three dimensions are **fully decoupled via Go interfaces**. Adding a new cha
 
 ### Prerequisites
 
+**Core:**
 - Go 1.24+
+
+**For the current implementation (Claude Code + tmux + WeChat):**
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - tmux
+- A WeChat account registered via [OpenClaw iLink](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin-cli)
 
 ### Build
 
