@@ -48,28 +48,21 @@ All three dimensions are **fully decoupled via Go interfaces**. Adding a new cha
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - tmux
 
-### Install (Linux)
+### Install (Linux & macOS)
 
 ```bash
 curl -sSfL https://raw.githubusercontent.com/CMGS/gua/refs/heads/master/scripts/install.sh | bash
 ```
 
 This will:
-- Download and install `gua-server` + `gua-bridge` to `/usr/bin/`
-- Create a systemd service (`gua.service`)
+- Download and install `gua-server` + `gua-bridge` (`/usr/bin/` on Linux, `/usr/local/bin/` on macOS)
+- Linux: create a systemd service (`gua.service`) managed via `systemctl`
+- macOS: create a LaunchAgent (`com.gua.server`) managed via `launchctl`
 - Set up work directory at `~/.gua/workspace/`
 
+The script is idempotent — safe to re-run for upgrades (stops running service before installing).
+
 For a specific version: `GUA_VERSION=0.2 curl ... | bash`
-
-### Install (macOS)
-
-Download from [releases](https://github.com/CMGS/gua/releases) and extract manually:
-
-```bash
-# Apple Silicon
-curl -sSfL https://github.com/CMGS/gua/releases/download/v0.1/gua_0.1_Darwin_arm64.tar.gz | tar xz
-sudo mv gua-server gua-bridge /usr/local/bin/
-```
 
 ### Build from Source
 
@@ -93,16 +86,20 @@ make build
 ### Start
 
 ```bash
-# If installed via install.sh:
+# Linux (systemd):
 sudo systemctl start gua
 sudo systemctl enable gua  # auto-start on boot
+
+# macOS (launchctl):
+launchctl load ~/Library/LaunchAgents/com.gua.server.plist
+launchctl start com.gua.server
 
 # Or run directly:
 gua-server start \
   --backend wechat \
   --agent claude \
   --work-dir ~/.gua/workspace \
-  --bridge-bin /usr/bin/gua-bridge \
+  --bridge-bin $(which gua-bridge) \
   --model sonnet \
   --prompt ./my-custom-rules.md  # optional: appended to init prompt
 ```
@@ -182,7 +179,7 @@ gua/
 ├── libc/wechat/        WeChat iLink protocol library
 ├── server/             Server orchestration (Channel ↔ Agent routing)
 ├── cmd/                CLI entry point (setup, start, accounts, sessions)
-├── scripts/            Install scripts (Linux systemd setup)
+├── scripts/            Install script (Linux systemd + macOS LaunchAgent)
 └── bot/                Reference implementations
     ├── weclaw/         WeChat + Claude (ACP/CLI/HTTP) — Go
     └── ccbot/          Telegram + Claude Code (tmux + JSONL) — Python
@@ -205,7 +202,7 @@ The Claude Code agent uses these specific mechanisms (other agents may differ):
 - **MCP Channel Protocol**: Persistent bidirectional communication via Unix socket bridge
 - **Hook-based Permissions**: `PermissionRequest` and `Elicitation` hooks intercept prompts before terminal display
 - **TUI Menu Capture**: `capture-pane` with separator + `Esc to` boundary detection for CLI command menus
-- **Watch**: FIFO-based `pipe-pane` streaming for runtime interactive prompt detection
+- **Watch**: FIFO-based `pipe-pane` keeps the terminal output stream alive (interactive detection uses `capture-pane` instead)
 
 ## Acknowledgments
 

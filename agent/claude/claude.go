@@ -314,7 +314,7 @@ func (c *ClaudeCode) Close(userID string) error {
 	c.mu.Unlock()
 
 	if !ok {
-		return nil
+		return agent.ErrNoSession
 	}
 	if isOverride {
 		defer cleanupWorkdir(sess.workDir)

@@ -250,11 +250,12 @@ func claudeLineFilter(line string) (keep bool, interactive bool) {
 
 // claudeAutoConfirm decides how to respond to CC startup prompts.
 // Most prompts: Enter (select option 1).
-// Prompts where option 1 is "exit/no": Down + Enter (select option 2).
+// Prompts where option 1 is "exit/no": look for a non-exit option and select it instead. If none found, send Enter.
 func claudeAutoConfirm(prompt string) []string {
-	lower := strings.ToLower(prompt)
-	if strings.Contains(lower, "no, exit") || strings.Contains(lower, "exit and fix") {
-		return []string{"Down", "Enter"}
+	for line := range strings.SplitSeq(prompt, "\n") {
+		if n := runtime.OptionLineNumber(strings.TrimSpace(line)); n != "" && !strings.Contains(strings.ToLower(line), "exit") {
+			return []string{n}
+		}
 	}
 	return []string{"Enter"}
 }

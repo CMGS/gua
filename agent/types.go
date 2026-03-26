@@ -1,6 +1,13 @@
 package agent
 
-import "github.com/CMGS/gua/types"
+import (
+	"errors"
+
+	"github.com/CMGS/gua/types"
+)
+
+// ErrNoSession is returned when an operation requires an active session but none exists.
+var ErrNoSession = errors.New("no active session")
 
 // PromptType indicates whether a response requires user interaction.
 type PromptType int

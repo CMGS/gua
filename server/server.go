@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -158,6 +159,9 @@ func (s *Server) dispatchCommand(ctx context.Context, msg channel.InboundMessage
 
 func (s *Server) cmdClose(_ context.Context, msg channel.InboundMessage) *agent.Response {
 	if err := s.agent.Close(msg.SenderID); err != nil {
+		if errors.Is(err, agent.ErrNoSession) {
+			return &agent.Response{Text: "no active session"}
+		}
 		return &agent.Response{Text: fmt.Sprintf("close failed: %v", err)}
 	}
 	return &agent.Response{Text: "session closed"}
