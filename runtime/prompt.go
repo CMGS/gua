@@ -82,7 +82,8 @@ func IsSeparatorLine(line string) bool {
 	return strings.Trim(line, "─-═━") == ""
 }
 
-// ExtractOptions parses numbered options from a prompt.
+// ExtractOptions parses numbered options from a prompt (e.g. "1. Yes" → "1").
+// Agent-specific option formats should be handled in the agent's own code.
 func ExtractOptions(prompt string) []string {
 	var opts []string
 	for raw := range strings.SplitSeq(prompt, "\n") {

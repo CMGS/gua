@@ -2,19 +2,19 @@ package voice
 
 import "encoding/binary"
 
+const (
+	sampleRate    = 24000
+	numChannels   = 1
+	bitsPerSample = 16
+	byteRate      = sampleRate * numChannels * bitsPerSample / 8
+	blockAlign    = numChannels * bitsPerSample / 8
+	headerSize    = 44
+)
+
 // EncodeWAV wraps raw PCM data in a standard RIFF/WAVE header.
 // Parameters: 24000 Hz sample rate, 1 channel (mono), 16 bits per sample,
 // signed little-endian PCM. The WAV header is 44 bytes.
 func EncodeWAV(pcmData []byte) []byte {
-	const (
-		sampleRate    = 24000
-		numChannels   = 1
-		bitsPerSample = 16
-		byteRate      = sampleRate * numChannels * bitsPerSample / 8
-		blockAlign    = numChannels * bitsPerSample / 8
-		headerSize    = 44
-	)
-
 	dataSize := len(pcmData)
 	fileSize := headerSize + dataSize - 8 // RIFF chunk size excludes "RIFF" and size field
 

@@ -144,6 +144,21 @@ func (s *Server) handleAction(ctx context.Context, msg channel.InboundMessage, p
 	return handled
 }
 
+func mapPromptKind(p agent.PromptType) channel.PromptKind {
+	switch p {
+	case agent.PromptPermission:
+		return channel.PromptKindPermission
+	case agent.PromptInteractive:
+		return channel.PromptKindInteractive
+	case agent.PromptElicitation:
+		return channel.PromptKindElicitation
+	case agent.PromptTUIMenu:
+		return channel.PromptKindTUIMenu
+	default:
+		return channel.PromptKindNone
+	}
+}
+
 func (s *Server) isAgentCLICommand(cmd string) bool {
 	return slices.ContainsFunc(s.agent.CLICommands(), func(c string) bool {
 		return strings.EqualFold(cmd, c)
@@ -253,11 +268,14 @@ func (s *Server) sendResponseToUser(ctx context.Context, userID string, p channe
 				description = resp.Permission.InputPreview
 			}
 		}
-		text := p.FormatPrompt(resp.PromptText, resp.Options, toolName, description)
+		kind := mapPromptKind(resp.Prompt)
+		text := p.FormatPrompt(kind, resp.PromptText, resp.Options, toolName, description)
 		_ = s.channel.Send(ctx, channel.OutboundMessage{
 			RecipientID: userID,
 			Text:        text,
 			ReplyToken:  token,
+			PromptKind:  kind,
+			Options:     resp.Options,
 		})
 		return
 	}

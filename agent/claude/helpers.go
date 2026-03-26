@@ -8,6 +8,7 @@ import (
 
 	"github.com/CMGS/gua/agent"
 	"github.com/CMGS/gua/agent/claude/protocol"
+	"github.com/CMGS/gua/channel"
 	"github.com/CMGS/gua/runtime"
 	"github.com/CMGS/gua/types"
 	"github.com/CMGS/gua/utils"
@@ -51,8 +52,19 @@ func tuiMenuResponse(menu string) *agent.Response {
 	return &agent.Response{
 		Prompt:     agent.PromptTUIMenu,
 		PromptText: menu,
-		Options:    runtime.ExtractOptions(menu),
+		Options:    extractCCMenuOptions(menu),
 	}
+}
+
+// extractCCMenuOptions extracts options from a CC TUI menu.
+// Numbered options ("1.","2.") become select values.
+// "Enter to" presence adds "confirm" signal.
+func extractCCMenuOptions(menu string) []string {
+	opts := runtime.ExtractOptions(menu)
+	if strings.Contains(menu, "Enter to") {
+		opts = append(opts, channel.OptionConfirm)
+	}
+	return opts
 }
 
 func actionToKeys(action types.Action, prompt string) []string {

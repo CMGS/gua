@@ -14,8 +14,20 @@ import (
 	"github.com/CMGS/gua/utils"
 )
 
+func showHelp(args []string, usage string) bool {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
+		fmt.Println(usage)
+		return true
+	}
+	return false
+}
+
 func cmdAccounts(ctx context.Context, args []string) int {
 	logger := log.WithFunc("cmd.accounts")
+
+	if showHelp(args, "Usage: gua-server accounts [list|remove <id>] [--backend wechat]") {
+		return 0
+	}
 
 	var backend, subcmd string
 	var positional []string
@@ -93,6 +105,10 @@ func cmdAccounts(ctx context.Context, args []string) int {
 
 func cmdSessions(ctx context.Context, args []string) int {
 	logger := log.WithFunc("cmd.sessions")
+
+	if showHelp(args, "Usage: gua-server sessions [list|remove <id>] --work-dir <path>") {
+		return 0
+	}
 
 	var workDir, subcmd string
 	var positional []string

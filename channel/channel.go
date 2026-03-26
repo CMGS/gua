@@ -21,7 +21,7 @@ type Channel interface {
 
 // Presenter renders structured responses for a specific platform.
 type Presenter interface {
-	FormatPrompt(promptText string, options []string, toolName, description string) string
+	FormatPrompt(kind PromptKind, promptText string, options []string, toolName, description string) string
 	FormatError(err error) string
 	FormatMediaAnnotation(mf types.MediaFile) string
 	MediaInstructions() string

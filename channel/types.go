@@ -6,6 +6,20 @@ import (
 	"github.com/CMGS/gua/types"
 )
 
+// PromptKind identifies the type of interactive prompt for channel-specific rendering.
+// Defined independently from agent.PromptType — server maps between them.
+type PromptKind int
+
+const (
+	PromptKindNone        PromptKind = iota
+	PromptKindPermission             // tool permission approval
+	PromptKindInteractive            // terminal interactive prompt
+	PromptKindElicitation            // MCP elicitation request
+	PromptKindTUIMenu                // TUI cursor menu (/model, /fast)
+
+	OptionConfirm = "confirm"
+)
+
 // InboundHandler is called for each inbound message from the platform.
 type InboundHandler func(ctx context.Context, msg InboundMessage)
 
@@ -23,4 +37,6 @@ type OutboundMessage struct {
 	Text        string
 	FilePath    string // optional local file path for media
 	ReplyToken  string
+	PromptKind  PromptKind // interactive prompt type (0=normal message)
+	Options     []string   // option values for structured interaction (e.g. ["1","2","3"])
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/CMGS/gua/channel"
 	"github.com/CMGS/gua/types"
 	"github.com/CMGS/gua/utils"
 )
@@ -11,13 +12,43 @@ import (
 type presenter struct{}
 
 // FormatPrompt renders a prompt for WeChat.
-// When toolName is set (permission/elicitation), shows approval hints.
-// When toolName is empty (TUI menu), shows navigation hints.
-func (p *presenter) FormatPrompt(promptText string, options []string, toolName, description string) string {
-	if promptText != "" {
-		return formatPromptText(promptText, options, toolName)
+// Ignores PromptKind — format is determined by available data:
+//   - options present → /select N + /yes + /cancel
+//   - no options      → /yes + /no
+func (p *presenter) FormatPrompt(_ channel.PromptKind, promptText string, options []string, toolName, description string) string {
+	if len(options) > 0 {
+		return formatWithOptions(promptText, options)
+	}
+	return formatYesNo(promptText, toolName, description)
+}
+
+func formatWithOptions(promptText string, options []string) string {
+	confirmable := false
+	var selectOpts []string
+	for _, opt := range options {
+		if opt == channel.OptionConfirm {
+			confirmable = true
+		} else {
+			selectOpts = append(selectOpts, opt)
+		}
 	}
 
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", promptText)
+	if hints := optionHints(selectOpts); hints != "" {
+		fmt.Fprintf(&b, "%s\n", hints)
+	}
+	if confirmable {
+		b.WriteString("/yes 确认，")
+	}
+	b.WriteString("/cancel 返回。")
+	return b.String()
+}
+
+func formatYesNo(promptText, toolName, description string) string {
+	if promptText != "" {
+		return fmt.Sprintf("需要确认:\n\n%s\n\n/yes 允许，/no 拒绝。", promptText)
+	}
 	if toolName != "" {
 		text := "需要确认 " + toolName
 		if description != "" {
@@ -25,31 +56,7 @@ func (p *presenter) FormatPrompt(promptText string, options []string, toolName, 
 		}
 		return text + "\n回复 /yes 允许，或 /no 拒绝。"
 	}
-
-	return "正在等待确认。回复 /yes 或 /cancel。"
-}
-
-func formatPromptText(promptText string, options []string, toolName string) string {
-	var b strings.Builder
-	if toolName != "" {
-		fmt.Fprintf(&b, "需要确认:\n\n%s\n\n", promptText)
-	} else {
-		fmt.Fprintf(&b, "%s\n\n", promptText)
-	}
-
-	if hints := optionHints(options); hints != "" {
-		fmt.Fprintf(&b, "%s\n", hints)
-	}
-
-	if toolName != "" {
-		b.WriteString("/yes 允许，/no 拒绝。")
-	} else {
-		if strings.Contains(promptText, "Enter to") {
-			b.WriteString("/yes 确认，")
-		}
-		b.WriteString("/cancel 返回。")
-	}
-	return b.String()
+	return "正在等待确认。回复 /yes 或 /no。"
 }
 
 // FormatError renders an error for WeChat.
