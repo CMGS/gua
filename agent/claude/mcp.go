@@ -76,11 +76,7 @@ func (c *ClaudeCode) handleBridgeSession(conn net.Conn, reader *bufio.Reader, en
 	sess.prompt.Clear()
 	c.mu.Unlock()
 
-	select {
-	case <-sess.connReady:
-	default:
-		close(sess.connReady)
-	}
+	sess.signalReady()
 	logger.Infof(c.ctx, "bridge connected for user=%s", reg.UserID)
 
 	// Stream-watch output and read bridge events in parallel.

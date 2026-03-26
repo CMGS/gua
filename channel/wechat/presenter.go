@@ -26,7 +26,7 @@ func formatWithOptions(promptText string, options []string) string {
 	confirmable := false
 	var selectOpts []string
 	for _, opt := range options {
-		if opt == channel.OptionConfirm {
+		if opt == types.OptionConfirm {
 			confirmable = true
 		} else {
 			selectOpts = append(selectOpts, opt)

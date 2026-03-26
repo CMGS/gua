@@ -16,8 +16,6 @@ const (
 	PromptKindInteractive            // terminal interactive prompt
 	PromptKindElicitation            // MCP elicitation request
 	PromptKindTUIMenu                // TUI cursor menu (/model, /fast)
-
-	OptionConfirm = "confirm"
 )
 
 // InboundHandler is called for each inbound message from the platform.

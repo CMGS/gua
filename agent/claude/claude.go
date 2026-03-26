@@ -153,7 +153,7 @@ func (c *ClaudeCode) Send(ctx context.Context, userID string, msg agent.Message)
 
 	// Wait for bridge to be connected before sending.
 	select {
-	case <-sess.connReady:
+	case <-sess.getConnReady():
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -376,9 +376,7 @@ func (c *ClaudeCode) Restart(ctx context.Context, userID string, flags map[strin
 	sess.respawning.Set(true)
 	sess.reset()
 
-	c.mu.Lock()
-	sess.connReady = make(chan struct{})
-	c.mu.Unlock()
+	sess.resetConnReady()
 
 	for len(sess.outCh) > 0 {
 		<-sess.outCh
@@ -401,7 +399,7 @@ func (c *ClaudeCode) Restart(ctx context.Context, userID string, flags map[strin
 		return err == nil, err
 	}
 
-	if err := runtime.AutoConfirmLoop(ctx, c.rt, sess.proc, sess.connReady, claudeLineFilter, claudeAutoConfirm, promptPollInterval, bridgeConnTimeout); err != nil {
+	if err := runtime.AutoConfirmLoop(ctx, c.rt, sess.proc, sess.getConnReady(), claudeLineFilter, claudeAutoConfirm, promptPollInterval, bridgeConnTimeout); err != nil {
 		sess.respawning.Clear()
 		logger.Warnf(c.ctx, "bridge timeout after respawn for user=%s: %v", userID, err)
 		if pane, captureErr := c.rt.CaptureOutput(c.ctx, sess.proc); captureErr == nil {

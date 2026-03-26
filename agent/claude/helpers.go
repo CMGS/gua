@@ -8,7 +8,6 @@ import (
 
 	"github.com/CMGS/gua/agent"
 	"github.com/CMGS/gua/agent/claude/protocol"
-	"github.com/CMGS/gua/channel"
 	"github.com/CMGS/gua/runtime"
 	"github.com/CMGS/gua/types"
 	"github.com/CMGS/gua/utils"
@@ -62,7 +61,7 @@ func tuiMenuResponse(menu string) *agent.Response {
 func extractCCMenuOptions(menu string) []string {
 	opts := runtime.ExtractOptions(menu)
 	if strings.Contains(menu, "Enter to") {
-		opts = append(opts, channel.OptionConfirm)
+		opts = append(opts, types.OptionConfirm)
 	}
 	return opts
 }
@@ -236,8 +235,10 @@ func claudeLineFilter(line string) (keep bool, interactive bool) {
 	}
 
 	// Filter box-drawing response lines (⎿ etc.) — previous command output, not menu.
-	if len(line) >= 3 && strings.ContainsAny(line[:min(len(line), 4)], "⎿│└├┌") {
-		return false, false
+	for _, prefix := range []string{"⎿", "│", "└", "├", "┌"} {
+		if strings.HasPrefix(line, prefix) {
+			return false, false
+		}
 	}
 
 	stripped := strings.TrimSpace(line)

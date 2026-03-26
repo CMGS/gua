@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/projecteru2/core/log"
@@ -18,6 +19,8 @@ import (
 	"github.com/CMGS/gua/runtime"
 	"github.com/CMGS/gua/utils"
 )
+
+// --- Types ---
 
 // pendingPerm holds a permission request and its reply channel.
 type pendingPerm struct {
@@ -31,6 +34,8 @@ type pendingElicit struct {
 	replyCh chan protocol.ElicitationReply
 }
 
+// --- userSession ---
+
 type userSession struct {
 	userID  string
 	workDir string
@@ -40,7 +45,7 @@ type userSession struct {
 	outCh   chan *agent.Response
 	cancel  context.CancelFunc
 
-	connReady chan struct{} // closed when bridge connects
+	connReady atomic.Value // stores chan struct{}; closed when bridge connects
 
 	writeMu    sync.Mutex // guards writeEnvelope (net.Conn.Write is not atomic for large messages)
 	writer     utils.SyncValue[io.Writer]
@@ -52,6 +57,24 @@ type userSession struct {
 	// FIFO queues for concurrent hook requests (multiple hooks can fire simultaneously).
 	permQueue   utils.SyncQueue[pendingPerm]
 	elicitQueue utils.SyncQueue[pendingElicit]
+}
+
+func (s *userSession) getConnReady() <-chan struct{} {
+	return s.connReady.Load().(chan struct{})
+}
+
+func (s *userSession) resetConnReady() {
+	s.connReady.Store(make(chan struct{}))
+}
+
+func (s *userSession) signalReady() {
+	defer func() { recover() }() //nolint:errcheck // concurrent close is safe
+	ch := s.connReady.Load().(chan struct{})
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
 }
 
 func (s *userSession) close() {
@@ -83,9 +106,7 @@ func (s *userSession) reset() {
 }
 
 func (s *userSession) pushResponse(resp *agent.Response) {
-	defer func() {
-		recover() //nolint:errcheck // send on closed channel during shutdown
-	}()
+	defer func() { recover() }() //nolint:errcheck // send on closed channel during shutdown
 	select {
 	case s.outCh <- resp:
 	default:
@@ -103,12 +124,11 @@ func (s *userSession) writeEnvelope(typ string, payload any) error {
 	return protocol.WriteEnvelope(w, typ, payload)
 }
 
-// drainPermQueue removes all pending permissions. Blocked hook goroutines
-// will exit when CC kills hook subprocesses (closing their connections).
 func (s *userSession) drainPermQueue() { s.permQueue.Drain() }
 
-// drainElicitQueue removes all pending elicitations.
 func (s *userSession) drainElicitQueue() { s.elicitQueue.Drain() }
+
+// --- ClaudeCode session lifecycle ---
 
 func (c *ClaudeCode) getOrCreateSession(ctx context.Context, userID string) (*userSession, error) {
 	if sess, ok := c.getSession(userID); ok {
@@ -183,12 +203,12 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 
 	sessCtx, cancel := context.WithCancel(ctx)
 	sess := &userSession{
-		userID:    userID,
-		workDir:   workDir,
-		outCh:     make(chan *agent.Response, responseBufSize),
-		cancel:    cancel,
-		connReady: make(chan struct{}),
+		userID:  userID,
+		workDir: workDir,
+		outCh:   make(chan *agent.Response, responseBufSize),
+		cancel:  cancel,
 	}
+	sess.resetConnReady()
 
 	command := c.buildCommand(userID, continuing)
 	logger.Debugf(ctx, "command for user=%s: %s", userID, command)
@@ -202,7 +222,6 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	// Register session under lock (brief).
 	c.mu.Lock()
 	if existing, ok := c.sessions[userID]; ok {
-		// Another goroutine won the race — clean up ours.
 		c.mu.Unlock()
 		cancel()
 		_ = c.rt.Kill(ctx, proc)
@@ -216,16 +235,15 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	// Auto-confirm startup prompts (MCP trust, dev channels) before bridge connects.
 	timeout := bridgeConnTimeout
 	if continuing {
-		timeout = 5 * time.Second // short timeout: --continue fails fast if no conversation
+		timeout = 5 * time.Second
 	}
-	err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, claudeAutoConfirm, promptPollInterval, timeout)
+	err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.getConnReady(), claudeLineFilter, claudeAutoConfirm, promptPollInterval, timeout)
 	if err != nil && continuing {
-		// --continue failed (no previous conversation). Retry without it.
 		logger.Infof(c.ctx, "no previous conversation, restarting without --continue for user=%s", userID)
-		sess.connReady = make(chan struct{})
+		sess.resetConnReady()
 		command = c.buildCommand(userID, false)
 		if respawnErr := c.rt.Respawn(ctx, proc, command); respawnErr == nil {
-			err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, claudeAutoConfirm, promptPollInterval, bridgeConnTimeout)
+			err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.getConnReady(), claudeLineFilter, claudeAutoConfirm, promptPollInterval, bridgeConnTimeout)
 		}
 	}
 	if err != nil {

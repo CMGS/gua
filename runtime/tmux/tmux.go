@@ -21,11 +21,31 @@ const watchWindowSize = 80 * 40 // ~1 terminal screen worth of characters
 // Tmux implements runtime.Runtime using tmux sessions.
 type Tmux struct {
 	sessionName string
+	tmuxBin     string
 }
 
 // New creates a tmux-based Runtime with the given session name.
 func New(sessionName string) *Tmux {
-	return &Tmux{sessionName: sessionName}
+	return &Tmux{sessionName: sessionName, tmuxBin: findTmux()}
+}
+
+// findTmux returns the absolute path to the tmux binary.
+// It first checks $PATH via LookPath, then falls back to common Homebrew
+// install locations which may not be in $PATH when the process is launched
+// outside a login shell (e.g. via launchd or a GUI app).
+func findTmux() string {
+	if p, err := exec.LookPath("tmux"); err == nil {
+		return p
+	}
+	for _, p := range []string{
+		"/opt/homebrew/bin/tmux",
+		"/usr/local/bin/tmux",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "tmux" // last resort: let exec fail with a clear error
 }
 
 // StartProcess creates a new tmux window running the given command.
@@ -151,7 +171,7 @@ func (t *Tmux) Close() error {
 }
 
 func (t *Tmux) exec(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "tmux", args...)
+	cmd := exec.CommandContext(ctx, t.tmuxBin, args...) //nolint:gosec // tmuxBin is resolved at init, args are constructed internally
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
