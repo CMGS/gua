@@ -23,6 +23,10 @@ type Agent interface {
 	Restart(ctx context.Context, userID string, flags map[string]string) (bool, error)
 	// RawInput sends text directly to the agent's terminal (bypasses MCP).
 	RawInput(ctx context.Context, userID string, input string) error
+	// RespawnSession switches the user's session to a different working directory.
+	// Idempotent: no-op if already running in the given workDir.
+	// resumeOpt: "" = fresh session, "continue" = most recent, "<id>" = resume specific session.
+	RespawnSession(ctx context.Context, userID, workDir, resumeOpt string) (changed bool, err error)
 	// CLICommands returns the agent's CLI command whitelist (e.g. /model, /fast).
 	CLICommands() []string
 	Close(userID string) error

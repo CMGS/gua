@@ -25,11 +25,13 @@ func (c *ClaudeCode) buildCommand(userID string, continueSession bool) string {
 	if c.model != "" {
 		args = append(args, runtime.ShellQuote("--model"), runtime.ShellQuote(c.model))
 	}
-	// Resume previous conversation only if one exists.
-	if continueSession {
+	// Resume previous conversation.
+	if resumeID := c.getUserFlag(userID, "resume"); resumeID != "" {
+		args = append(args, runtime.ShellQuote("--resume"), runtime.ShellQuote(resumeID))
+	} else if continueSession {
 		args = append(args, runtime.ShellQuote("--continue"))
 	}
-	if c.getUserFlag(userID, "skip-permissions") == "true" {
+	if c.getUserFlag(userID, "skip-permissions") == flagTrue {
 		args = append(args, runtime.ShellQuote("--dangerously-skip-permissions"))
 	} else {
 		// Pre-approve common tools to reduce permission prompts.
@@ -111,6 +113,9 @@ func (c *ClaudeCode) pollTUIMenuExit(ctx context.Context, sess *userSession) {
 	time.Sleep(300 * time.Millisecond)
 	pane, err := c.rt.CaptureOutput(ctx, sess.proc)
 	if err != nil {
+		if ctx.Err() == nil {
+			log.WithFunc("claude.pollTUIMenuExit").Debugf(ctx, "capture output: %v", err)
+		}
 		return
 	}
 	if status := captureStatusText(pane); status != "" {

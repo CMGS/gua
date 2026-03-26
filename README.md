@@ -137,6 +137,10 @@ gua-server start \
 | `/whosyourdaddy` | Activate yolo mode (`--dangerously-skip-permissions`) |
 | `/imyourdaddy` | Restore safe mode |
 | `/share` | Send the bot's QR code / invite link for sharing with other users |
+| `/close` | Close current session (next message starts a fresh session) |
+| `/respawn <dir>` | Switch session to a different working directory (fresh) |
+| `/respawn <dir> --continue` | Same, resume most recent conversation |
+| `/respawn <dir> --resume <id>` | Same, resume a specific session by ID |
 
 **Agent CLI passthrough** (Claude Code specific, forwarded to terminal):
 

@@ -248,7 +248,43 @@ func claudeLineFilter(line string) (keep bool, interactive bool) {
 	return true, false
 }
 
+// claudeAutoConfirm decides how to respond to CC startup prompts.
+// Most prompts: Enter (select option 1).
+// Prompts where option 1 is "exit/no": Down + Enter (select option 2).
+func claudeAutoConfirm(prompt string) []string {
+	lower := strings.ToLower(prompt)
+	if strings.Contains(lower, "no, exit") || strings.Contains(lower, "exit and fix") {
+		return []string{"Down", "Enter"}
+	}
+	return []string{"Enter"}
+}
+
+func hookEntry(command string) []map[string]any {
+	return []map[string]any{{
+		"matcher": "",
+		"hooks": []map[string]any{{
+			"type":    "command",
+			"command": command,
+			"timeout": hookTimeoutMS,
+		}},
+	}}
+}
+
 func hasExistingSession(workDir string) bool {
 	_, err := os.Stat(filepath.Join(workDir, ".mcp.json"))
 	return err == nil
+}
+
+// cleanupWorkdir removes gua's injected config from a workdir.
+// Called on Close to avoid polluting user project directories.
+func cleanupWorkdir(workDir string) {
+	utils.UnmergeJSONFile(
+		filepath.Join(workDir, ".mcp.json"),
+		[]string{"mcpServers", "gua"},
+	)
+	utils.UnmergeJSONFile(
+		filepath.Join(workDir, ".claude", "settings.local.json"),
+		[]string{"hooks", "PermissionRequest"},
+		[]string{"hooks", "Elicitation"},
+	)
 }

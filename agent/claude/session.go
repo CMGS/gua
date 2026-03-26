@@ -66,6 +66,22 @@ func (s *userSession) close() {
 	}
 }
 
+// reset clears connection state for respawn. Does NOT close outCh
+// (server's responseLoop is still reading from it).
+func (s *userSession) reset() {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.conn != nil {
+		_ = s.conn.Close()
+	}
+	s.writer.Clear()
+	s.drainPermQueue()
+	s.drainElicitQueue()
+	s.prompt.Clear()
+	s.tuiMenu.Clear()
+}
+
 func (s *userSession) pushResponse(resp *agent.Response) {
 	defer func() {
 		recover() //nolint:errcheck // send on closed channel during shutdown
@@ -112,20 +128,33 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	}
 	c.mu.Unlock()
 
+	// Resolve workdir: override (from /respawn) or default.
 	normalized := utils.NormalizeID(userID)
-	workDir := filepath.Join(c.baseWorkDir, "sessions", normalized)
+	isOverride := false
+	var workDir string
+	if override := c.getWorkdirOverride(userID); override != "" {
+		workDir = override
+		isOverride = true
+	} else {
+		workDir = filepath.Join(c.baseWorkDir, "sessions", normalized)
+	}
 	continuing := hasExistingSession(workDir)
+	if isOverride {
+		continuing = c.getUserFlag(userID, "continue") == flagTrue
+	}
 
-	if err := os.MkdirAll(workDir, 0o755); err != nil { //nolint:gosec // non-sensitive per-user session directory
+	if err := os.MkdirAll(workDir, 0o755); err != nil { //nolint:gosec
 		return nil, fmt.Errorf("create workdir: %w", err)
 	}
 
-	if c.claudeMD != "" {
-		if err := os.WriteFile(filepath.Join(workDir, "CLAUDE.md"), []byte(c.claudeMD), 0o644); err != nil { //nolint:gosec // non-sensitive config file
+	// Only write CLAUDE.md to gua-managed workdirs, not user project directories.
+	if c.claudeMD != "" && !isOverride {
+		if err := os.WriteFile(filepath.Join(workDir, "CLAUDE.md"), []byte(c.claudeMD), 0o644); err != nil { //nolint:gosec
 			return nil, fmt.Errorf("write CLAUDE.md: %w", err)
 		}
 	}
 
+	// Merge gua's MCP server into existing .mcp.json (preserves user's other servers).
 	mcpConfig := map[string]any{
 		"mcpServers": map[string]any{
 			"gua": map[string]any{
@@ -134,35 +163,21 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 			},
 		},
 	}
-	if err := utils.WriteJSONFile(filepath.Join(workDir, ".mcp.json"), &mcpConfig, 0o644); err != nil {
+	if err := utils.MergeJSONFile(filepath.Join(workDir, ".mcp.json"), mcpConfig, 0o644); err != nil {
 		return nil, err
 	}
 
-	// Write hook settings so CC routes permission/elicitation through gua-bridge.
+	// Merge gua's hooks into existing settings (preserves user's other hooks).
 	hookCmd := func(hookType string) string {
 		return fmt.Sprintf("%s --socket %s --user %s --hook %s", c.bridgeBin, c.socketPath, userID, hookType)
 	}
 	hookSettings := map[string]any{
 		"hooks": map[string]any{
-			"PermissionRequest": []map[string]any{{
-				"matcher": "",
-				"hooks": []map[string]any{{
-					"type":    "command",
-					"command": hookCmd("permission"),
-					"timeout": hookTimeoutMS,
-				}},
-			}},
-			"Elicitation": []map[string]any{{
-				"matcher": "",
-				"hooks": []map[string]any{{
-					"type":    "command",
-					"command": hookCmd("elicitation"),
-					"timeout": hookTimeoutMS,
-				}},
-			}},
+			"PermissionRequest": hookEntry(hookCmd("permission")),
+			"Elicitation":       hookEntry(hookCmd("elicitation")),
 		},
 	}
-	if err := utils.WriteJSONFile(filepath.Join(workDir, ".claude", "settings.local.json"), &hookSettings, 0o644); err != nil {
+	if err := utils.MergeJSONFile(filepath.Join(workDir, ".claude", "settings.local.json"), hookSettings, 0o644); err != nil {
 		return nil, err
 	}
 
@@ -203,14 +218,14 @@ func (c *ClaudeCode) createSession(ctx context.Context, userID string) (*userSes
 	if continuing {
 		timeout = 5 * time.Second // short timeout: --continue fails fast if no conversation
 	}
-	err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, timeout)
+	err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, claudeAutoConfirm, promptPollInterval, timeout)
 	if err != nil && continuing {
 		// --continue failed (no previous conversation). Retry without it.
 		logger.Infof(c.ctx, "no previous conversation, restarting without --continue for user=%s", userID)
 		sess.connReady = make(chan struct{})
 		command = c.buildCommand(userID, false)
 		if respawnErr := c.rt.Respawn(ctx, proc, command); respawnErr == nil {
-			err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, bridgeConnTimeout)
+			err = runtime.AutoConfirmLoop(sessCtx, c.rt, proc, sess.connReady, claudeLineFilter, claudeAutoConfirm, promptPollInterval, bridgeConnTimeout)
 		}
 	}
 	if err != nil {

@@ -40,6 +40,7 @@ func New(ch channel.Channel, a agent.Agent) *Server {
 		"/whosyourdaddy": s.cmdYolo,
 		"/imyourdaddy":   s.cmdSafe,
 		"/share":         s.cmdShare,
+		"/close":         s.cmdClose,
 	}
 	return s
 }
@@ -78,9 +79,7 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 	trimmed := strings.TrimSpace(msg.Text)
 
 	// 1. Global commands.
-	if handler, ok := s.commands[strings.ToLower(trimmed)]; ok {
-		s.sendText(ctx, msg, "processing...")
-		resp := handler(ctx, msg)
+	if resp := s.dispatchCommand(ctx, msg, trimmed); resp != nil {
 		s.sendResponseToUser(ctx, msg.SenderID, presenter, resp)
 		return
 	}
@@ -142,6 +141,55 @@ func (s *Server) handleAction(ctx context.Context, msg channel.InboundMessage, p
 		return true
 	}
 	return handled
+}
+
+func (s *Server) dispatchCommand(ctx context.Context, msg channel.InboundMessage, trimmed string) *agent.Response {
+	// Exact match (commands without arguments).
+	if handler, ok := s.commands[strings.ToLower(trimmed)]; ok {
+		return handler(ctx, msg)
+	}
+	// Prefix match (commands with arguments).
+	fields := strings.Fields(trimmed)
+	if len(fields) > 0 && strings.ToLower(fields[0]) == "/respawn" {
+		return s.cmdRespawn(ctx, msg, fields)
+	}
+	return nil
+}
+
+func (s *Server) cmdClose(_ context.Context, msg channel.InboundMessage) *agent.Response {
+	if err := s.agent.Close(msg.SenderID); err != nil {
+		return &agent.Response{Text: fmt.Sprintf("close failed: %v", err)}
+	}
+	return &agent.Response{Text: "session closed"}
+}
+
+func (s *Server) cmdRespawn(ctx context.Context, msg channel.InboundMessage, fields []string) *agent.Response {
+	if len(fields) < 2 {
+		return &agent.Response{Text: "usage: /respawn <workdir> [--continue | --resume <id>]"}
+	}
+	s.sendText(ctx, msg, "processing...")
+	workDir := fields[1]
+
+	// Parse resume option.
+	var resumeOpt string
+	args := fields[2:]
+	if slices.Contains(args, "--continue") {
+		resumeOpt = "continue"
+	} else if idx := slices.Index(args, "--resume"); idx >= 0 {
+		if idx+1 >= len(args) {
+			return &agent.Response{Text: "usage: /respawn <workdir> --resume <session-id>"}
+		}
+		resumeOpt = args[idx+1]
+	}
+
+	changed, err := s.agent.RespawnSession(ctx, msg.SenderID, workDir, resumeOpt)
+	if err != nil {
+		return &agent.Response{Text: fmt.Sprintf("respawn failed: %v", err)}
+	}
+	if !changed {
+		return &agent.Response{Text: "already in " + workDir}
+	}
+	return &agent.Response{Text: "session switched to " + workDir}
 }
 
 func mapPromptKind(p agent.PromptType) channel.PromptKind {
@@ -210,6 +258,7 @@ func (s *Server) getReplyToken(userID string) string {
 }
 
 func (s *Server) cmdYolo(ctx context.Context, msg channel.InboundMessage) *agent.Response {
+	s.sendText(ctx, msg, "processing...")
 	restarted, err := s.agent.Restart(ctx, msg.SenderID, map[string]string{"skip-permissions": "true"})
 	if err != nil {
 		return &agent.Response{Text: fmt.Sprintf("restart failed: %v", err)}
@@ -232,6 +281,7 @@ func (s *Server) cmdShare(ctx context.Context, msg channel.InboundMessage) *agen
 }
 
 func (s *Server) cmdSafe(ctx context.Context, msg channel.InboundMessage) *agent.Response {
+	s.sendText(ctx, msg, "processing...")
 	restarted, err := s.agent.Restart(ctx, msg.SenderID, nil)
 	if err != nil {
 		return &agent.Response{Text: fmt.Sprintf("restart failed: %v", err)}

@@ -32,6 +32,8 @@ const (
 
 	elicitAccept  = "accept"
 	elicitDecline = "decline"
+
+	flagTrue = "true"
 )
 
 // Option configures a ClaudeCode agent.
@@ -39,19 +41,20 @@ type Option func(*ClaudeCode)
 
 // ClaudeCode implements agent.Agent by spawning Claude Code with an MCP bridge.
 type ClaudeCode struct {
-	claudeCmd   string
-	bridgeBin   string
-	model       string
-	baseWorkDir string
-	claudeMD    string
-	socketPath  string
-	listener    net.Listener
-	rt          runtime.Runtime
-	ctx         context.Context
-	cancel      context.CancelFunc
-	mu          sync.RWMutex
-	sessions    map[string]*userSession
-	userFlags   map[string]map[string]string
+	claudeCmd        string
+	bridgeBin        string
+	model            string
+	baseWorkDir      string
+	claudeMD         string
+	socketPath       string
+	listener         net.Listener
+	rt               runtime.Runtime
+	ctx              context.Context
+	cancel           context.CancelFunc
+	mu               sync.RWMutex
+	sessions         map[string]*userSession
+	userFlags        map[string]map[string]string
+	workdirOverrides map[string]string // per-user workdir override (set by /respawn)
 }
 
 // New creates a new ClaudeCode agent. The provided ctx controls the lifetime
@@ -59,12 +62,13 @@ type ClaudeCode struct {
 func New(ctx context.Context, opts ...Option) (*ClaudeCode, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	c := &ClaudeCode{
-		claudeCmd: defaultClaudeCmd,
-		bridgeBin: defaultBridgeBin,
-		sessions:  make(map[string]*userSession),
-		userFlags: make(map[string]map[string]string),
-		ctx:       ctx,
-		cancel:    cancel,
+		claudeCmd:        defaultClaudeCmd,
+		bridgeBin:        defaultBridgeBin,
+		sessions:         make(map[string]*userSession),
+		userFlags:        make(map[string]map[string]string),
+		workdirOverrides: make(map[string]string),
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -239,6 +243,52 @@ func (c *ClaudeCode) pollTUIMenu(ctx context.Context, sess *userSession) {
 	}
 }
 
+// RespawnSession switches the user's session to a different working directory.
+func (c *ClaudeCode) RespawnSession(ctx context.Context, userID, workDir, resumeOpt string) (bool, error) {
+	absWorkDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return false, fmt.Errorf("resolve workdir: %w", err)
+	}
+	info, err := os.Stat(absWorkDir)
+	if err != nil {
+		return false, fmt.Errorf("workdir %s: %w", absWorkDir, err)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("workdir %s is not a directory", absWorkDir)
+	}
+
+	sess, hasSession := c.getSession(userID)
+	if hasSession && sess.workDir == absWorkDir {
+		return false, nil // idempotent
+	}
+	if hasSession {
+		_ = c.Close(userID)
+	}
+
+	c.mu.Lock()
+	c.workdirOverrides[userID] = absWorkDir
+	if resumeOpt != "" {
+		if c.userFlags[userID] == nil {
+			c.userFlags[userID] = make(map[string]string)
+		}
+		if resumeOpt == "continue" {
+			c.userFlags[userID]["continue"] = flagTrue
+		} else {
+			c.userFlags[userID]["resume"] = resumeOpt
+		}
+	}
+	c.mu.Unlock()
+
+	_, err = c.createSession(ctx, userID)
+	return err == nil, err
+}
+
+func (c *ClaudeCode) getWorkdirOverride(userID string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.workdirOverrides[userID]
+}
+
 // Subscribe returns a channel that receives all responses for a user.
 func (c *ClaudeCode) Subscribe(userID string) <-chan *agent.Response {
 	sess, ok := c.getSession(userID)
@@ -255,14 +305,19 @@ func (c *ClaudeCode) Subscribe(userID string) <-chan *agent.Response {
 func (c *ClaudeCode) Close(userID string) error {
 	c.mu.Lock()
 	sess, ok := c.sessions[userID]
+	isOverride := c.workdirOverrides[userID] != ""
 	if ok {
 		delete(c.sessions, userID)
 		delete(c.userFlags, userID)
+		delete(c.workdirOverrides, userID)
 	}
 	c.mu.Unlock()
 
 	if !ok {
 		return nil
+	}
+	if isOverride {
+		defer cleanupWorkdir(sess.workDir)
 	}
 	sess.close()
 	return c.rt.Kill(c.ctx, sess.proc)
@@ -274,15 +329,20 @@ func (c *ClaudeCode) CloseAll() error {
 
 	c.mu.Lock()
 	sessions := c.sessions
+	overrides := c.workdirOverrides
 	c.sessions = make(map[string]*userSession)
+	c.workdirOverrides = make(map[string]string)
 	c.mu.Unlock()
 
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cleanupCancel()
 
-	for _, sess := range sessions {
+	for userID, sess := range sessions {
 		sess.close()
 		_ = c.rt.Kill(cleanupCtx, sess.proc)
+		if overrides[userID] != "" {
+			cleanupWorkdir(sess.workDir)
+		}
 	}
 
 	_ = c.listener.Close()
@@ -314,18 +374,7 @@ func (c *ClaudeCode) Restart(ctx context.Context, userID string, flags map[strin
 
 	// Respawn in the same pane — keeps workdir, session data intact.
 	sess.respawning.Set(true)
-	// Close conn but do NOT close outCh — server's responseLoop is still reading from it.
-	if sess.cancel != nil {
-		sess.cancel()
-	}
-	if sess.conn != nil {
-		_ = sess.conn.Close()
-	}
-	sess.writer.Clear()
-	sess.drainPermQueue()
-	sess.drainElicitQueue()
-	sess.prompt.Clear()
-	sess.tuiMenu.Clear()
+	sess.reset()
 
 	c.mu.Lock()
 	sess.connReady = make(chan struct{})
@@ -340,12 +389,19 @@ func (c *ClaudeCode) Restart(ctx context.Context, userID string, flags map[strin
 	logger.Infof(c.ctx, "respawning claude for user=%s", userID)
 
 	if err := c.rt.Respawn(ctx, sess.proc, command); err != nil {
+		// Preserve workdir override across Close (which deletes it).
+		savedOverride := c.getWorkdirOverride(userID)
 		_ = c.Close(userID)
+		if savedOverride != "" {
+			c.mu.Lock()
+			c.workdirOverrides[userID] = savedOverride
+			c.mu.Unlock()
+		}
 		_, err := c.createSession(ctx, userID)
 		return err == nil, err
 	}
 
-	if err := runtime.AutoConfirmLoop(ctx, c.rt, sess.proc, sess.connReady, claudeLineFilter, []string{"Enter"}, promptPollInterval, bridgeConnTimeout); err != nil {
+	if err := runtime.AutoConfirmLoop(ctx, c.rt, sess.proc, sess.connReady, claudeLineFilter, claudeAutoConfirm, promptPollInterval, bridgeConnTimeout); err != nil {
 		sess.respawning.Clear()
 		logger.Warnf(c.ctx, "bridge timeout after respawn for user=%s: %v", userID, err)
 		if pane, captureErr := c.rt.CaptureOutput(c.ctx, sess.proc); captureErr == nil {
