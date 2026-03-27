@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -15,12 +16,14 @@ import (
 
 	"github.com/CMGS/gua/agent/claude"
 	"github.com/CMGS/gua/channel"
+	tg "github.com/CMGS/gua/channel/telegram"
 	"github.com/CMGS/gua/channel/wechat"
 	"github.com/CMGS/gua/config"
 	"github.com/CMGS/gua/libc/wechat/auth"
 	"github.com/CMGS/gua/libc/wechat/types"
 	runtmux "github.com/CMGS/gua/runtime/tmux"
 	"github.com/CMGS/gua/server"
+	"github.com/CMGS/gua/utils"
 )
 
 func cmdStart(ctx context.Context, args []string) int {
@@ -49,17 +52,6 @@ func cmdStart(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	dir := accountsDir(*backendName)
-	allCreds, err := loadAllAccounts(ctx, dir)
-	if err != nil {
-		logger.Errorf(ctx, err, "load accounts from %s", dir)
-		return 1
-	}
-	if len(allCreds) == 0 {
-		logger.Errorf(ctx, nil, "no accounts in %s, run setup first", dir)
-		return 1
-	}
-
 	var userPrompt string
 	if *promptFile != "" {
 		data, readErr := os.ReadFile(*promptFile) //nolint:gosec
@@ -78,6 +70,77 @@ func cmdStart(ctx context.Context, args []string) int {
 		claude.WithWorkDir(*workDir),
 	}
 
+	if *agentName != "claude" {
+		logger.Errorf(ctx, fmt.Errorf("unknown agent: %s", *agentName), "only 'claude' is supported")
+		return 1
+	}
+
+	switch *backendName {
+	case "telegram":
+		return startTelegram(ctx, userPrompt, agentOpts...)
+	default:
+		return startWechat(ctx, *backendName, *agentName, userPrompt, agentOpts...)
+	}
+}
+
+// buildInitPrompt assembles the agent init prompt from base + agent + channel parts.
+func buildInitPrompt(channelPrompt string, ch channel.Channel, userPrompt string) string {
+	initPrompt := config.BaseMD + "\n\n" + claude.PromptMD + "\n\n" + channelPrompt + "\n\n" + ch.Presenter().MediaInstructions()
+	if userPrompt != "" {
+		initPrompt += "\n\n" + userPrompt
+	}
+	return initPrompt
+}
+
+func startTelegram(ctx context.Context, userPrompt string, opts ...claude.Option) int {
+	logger := log.WithFunc("cmd.startTelegram")
+
+	type tokenCreds struct {
+		Token string `json:"token"`
+	}
+
+	dir := accountsDir("telegram")
+	creds, err := utils.ReadJSONFile[tokenCreds](filepath.Join(dir, "bot.json"))
+	if err != nil {
+		logger.Errorf(ctx, err, "load telegram credentials from %s", dir)
+		return 1
+	}
+	if creds.Token == "" {
+		logger.Errorf(ctx, nil, "empty token in %s, run setup first", dir)
+		return 1
+	}
+
+	b := tg.New(creds.Token)
+	opts = append(opts, claude.WithClaudeMD(buildInitPrompt(tg.PromptMD, b, userPrompt)))
+
+	a, err := claude.New(ctx, opts...)
+	if err != nil {
+		logger.Errorf(ctx, err, "create agent")
+		return 1
+	}
+
+	srv := server.New(b, a)
+	logger.Info(ctx, "telegram bot running")
+	if err := srv.Run(ctx); err != nil {
+		logger.Warnf(ctx, "server exited: %v", err)
+	}
+	return 0
+}
+
+func startWechat(ctx context.Context, backendName, agentName, userPrompt string, opts ...claude.Option) int {
+	logger := log.WithFunc("cmd.startWechat")
+
+	dir := accountsDir(backendName)
+	allCreds, err := loadAllAccounts(ctx, dir)
+	if err != nil {
+		logger.Errorf(ctx, err, "load accounts from %s", dir)
+		return 1
+	}
+	if len(allCreds) == 0 {
+		logger.Errorf(ctx, nil, "no accounts in %s, run setup first", dir)
+		return 1
+	}
+
 	known := make(map[string]bool, len(allCreds))
 	var wg sync.WaitGroup
 	for _, creds := range allCreds {
@@ -85,12 +148,12 @@ func cmdStart(ctx context.Context, args []string) int {
 		wg.Add(1)
 		go func(creds *types.Credentials) {
 			defer wg.Done()
-			logger.Infof(ctx, "starting account %s: backend=%s agent=%s", creds.ILinkBotID, *backendName, *agentName)
-			runAccount(ctx, creds, *backendName, *agentName, dir, userPrompt, agentOpts...)
+			logger.Infof(ctx, "starting account %s: backend=%s agent=%s", creds.ILinkBotID, backendName, agentName)
+			runAccount(ctx, creds, backendName, agentName, dir, userPrompt, opts...)
 		}(creds)
 	}
 
-	go watchNewAccounts(ctx, dir, known, *backendName, *agentName, userPrompt, agentOpts...)
+	go watchNewAccounts(ctx, dir, known, backendName, agentName, userPrompt, opts...)
 
 	wg.Wait()
 	return 0
@@ -109,11 +172,7 @@ func runAccount(ctx context.Context, creds *types.Credentials, backendName, agen
 		return
 	}
 
-	initPrompt := config.BaseMD + "\n\n" + claude.PromptMD + "\n\n" + wechat.PromptMD + "\n\n" + b.Presenter().MediaInstructions()
-	if userPrompt != "" {
-		initPrompt += "\n\n" + userPrompt
-	}
-	opts = append(opts, claude.WithClaudeMD(initPrompt))
+	opts = append(opts, claude.WithClaudeMD(buildInitPrompt(wechat.PromptMD, b, userPrompt)))
 
 	switch agentName {
 	case "claude":

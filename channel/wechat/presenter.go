@@ -107,9 +107,11 @@ func (p *presenter) ParseAction(input string) *types.Action {
 		trimmed == "不" || trimmed == "不要" || trimmed == "不行" || trimmed == "取消":
 		return &types.Action{Type: types.ActionDeny}
 	case strings.HasPrefix(lower, "/select "):
-		val := strings.TrimSpace(trimmed[len("/select "):])
-		if val != "" {
-			return &types.Action{Type: types.ActionSelect, Value: val}
+		if val, ok := strings.CutPrefix(lower, "/select "); ok {
+			val = strings.TrimSpace(val)
+			if val != "" {
+				return &types.Action{Type: types.ActionSelect, Value: val}
+			}
 		}
 		return nil
 	default:

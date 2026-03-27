@@ -16,6 +16,11 @@ type Channel interface {
 	// ShareQR returns a local file path to a shareable QR/invite image.
 	// Returns "" if not supported.
 	ShareQR(ctx context.Context) (string, error)
+	// ProbeThread checks if the thread/topic for senderID is still valid.
+	// Returns ErrThreadGone if the thread has been deleted. Returns nil if valid or unsupported.
+	ProbeThread(ctx context.Context, senderID string) error
+	// RenameThread renames the thread/topic identified by replyToken. No-op if unsupported.
+	RenameThread(ctx context.Context, replyToken, name string)
 	Presenter() Presenter
 }
 

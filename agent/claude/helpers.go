@@ -164,20 +164,22 @@ func captureStatusText(pane string) string {
 	lines := strings.Split(pane, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
-		if !strings.HasPrefix(line, "❯") {
+		rest, ok := strings.CutPrefix(line, "❯")
+		if !ok {
 			continue
 		}
-		rest := strings.TrimSpace(strings.TrimPrefix(line, "❯"))
+		rest = strings.TrimSpace(rest)
 		if !strings.HasPrefix(rest, "/") {
 			continue
 		}
 		// Found command line — look below for ⎿ response.
 		for j := i + 1; j < len(lines); j++ {
 			resp := strings.TrimSpace(lines[j])
-			if !strings.HasPrefix(resp, "⎿") {
+			stripped, ok := strings.CutPrefix(resp, "⎿")
+			if !ok {
 				continue
 			}
-			stripped := strings.TrimSpace(strings.TrimPrefix(resp, "⎿"))
+			stripped = strings.TrimSpace(stripped)
 			if stripped != "" {
 				return stripped
 			}
@@ -192,10 +194,11 @@ func captureStatusText(pane string) string {
 func findCurrentOption(prompt string) int {
 	for line := range strings.SplitSeq(prompt, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "❯") {
+		rest, ok := strings.CutPrefix(trimmed, "❯")
+		if !ok {
 			continue
 		}
-		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯"))
+		rest = strings.TrimSpace(rest)
 		if n := runtime.OptionLineNumber(rest); n != "" {
 			num, _ := strconv.Atoi(n)
 			return num

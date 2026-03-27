@@ -42,6 +42,7 @@ func New(ch channel.Channel, a agent.Agent) *Server {
 		"/imyourdaddy":   s.cmdSafe,
 		"/share":         s.cmdShare,
 		"/close":         s.cmdClose,
+		"/clean":         s.cmdClean,
 	}
 	return s
 }
@@ -79,15 +80,21 @@ func (s *Server) handleInbound(ctx context.Context, msg channel.InboundMessage) 
 	presenter := s.channel.Presenter()
 	trimmed := strings.TrimSpace(msg.Text)
 
-	// 1. Global commands.
+	// 1. Global commands — use msg.ReplyToken directly (commands like /close
+	// may destroy the session, racing with async replyToken cleanup).
 	if resp := s.dispatchCommand(ctx, msg, trimmed); resp != nil {
-		s.sendResponseToUser(ctx, msg.SenderID, presenter, resp)
+		s.sendCommandResponse(ctx, msg, presenter, resp)
 		return
 	}
 
 	// 2. Control actions and agent CLI commands.
 	if len(msg.MediaFiles) == 0 {
 		if handled := s.handleAction(ctx, msg, presenter, trimmed); handled {
+			return
+		}
+		// Action-only messages (e.g. inline keyboard callback) should not
+		// fall through to the agent as text when the action is stale.
+		if msg.ActionOnly {
 			return
 		}
 	}
@@ -151,8 +158,13 @@ func (s *Server) dispatchCommand(ctx context.Context, msg channel.InboundMessage
 	}
 	// Prefix match (commands with arguments).
 	fields := strings.Fields(trimmed)
-	if len(fields) > 0 && strings.ToLower(fields[0]) == "/respawn" {
-		return s.cmdRespawn(ctx, msg, fields)
+	if len(fields) > 0 {
+		switch strings.ToLower(fields[0]) {
+		case "/respawn":
+			return s.cmdRespawn(ctx, msg, fields)
+		case "/rename":
+			return s.cmdRename(ctx, msg, fields)
+		}
 	}
 	return nil
 }
@@ -165,6 +177,37 @@ func (s *Server) cmdClose(_ context.Context, msg channel.InboundMessage) *agent.
 		return &agent.Response{Text: fmt.Sprintf("close failed: %v", err)}
 	}
 	return &agent.Response{Text: "session closed"}
+}
+
+func (s *Server) cmdClean(ctx context.Context, _ channel.InboundMessage) *agent.Response {
+	var cleaned int
+	for _, sid := range s.agent.ActiveSessions() {
+		if err := s.channel.ProbeThread(ctx, sid); errors.Is(err, channel.ErrThreadGone) {
+			_ = s.agent.Close(sid)
+			cleaned++
+		}
+	}
+	if cleaned == 0 {
+		return &agent.Response{Text: "no stale sessions"}
+	}
+	return &agent.Response{Text: fmt.Sprintf("cleaned %d stale session(s)", cleaned)}
+}
+
+func (s *Server) cmdRename(ctx context.Context, msg channel.InboundMessage, fields []string) *agent.Response {
+	if len(fields) < 2 {
+		return &agent.Response{Text: "usage: /rename <name>"}
+	}
+	name := strings.Join(fields[1:], " ")
+
+	// Rename agent session (CC's /rename command).
+	if err := s.agent.RawInput(ctx, msg.SenderID, "/rename "+name); err != nil {
+		return &agent.Response{Text: fmt.Sprintf("rename failed: %v", err)}
+	}
+
+	// Rename channel thread/topic (Telegram only, no-op for WeChat).
+	s.channel.RenameThread(ctx, msg.ReplyToken, name)
+
+	return &agent.Response{Text: fmt.Sprintf("renamed to %s", name)}
 }
 
 func (s *Server) cmdRespawn(ctx context.Context, msg channel.InboundMessage, fields []string) *agent.Response {
@@ -296,6 +339,18 @@ func (s *Server) cmdSafe(ctx context.Context, msg channel.InboundMessage) *agent
 	return &agent.Response{Text: "safe mode restored"}
 }
 
+// handleSendError checks if a send error means the thread is gone (deleted topic).
+// If so, closes the session. Returns true if the caller should stop sending.
+func (s *Server) handleSendError(ctx context.Context, userID string, err error) bool {
+	if errors.Is(err, channel.ErrThreadGone) {
+		log.WithFunc("server.handleSendError").Infof(ctx, "thread gone for %s, closing session", userID)
+		_ = s.agent.Close(userID)
+		return true
+	}
+	log.WithFunc("server.handleSendError").Warnf(ctx, "send to %s: %v", userID, err)
+	return false
+}
+
 func (s *Server) sendText(ctx context.Context, msg channel.InboundMessage, text string) {
 	_ = s.channel.Send(ctx, channel.OutboundMessage{
 		RecipientID: msg.SenderID,
@@ -304,9 +359,26 @@ func (s *Server) sendText(ctx context.Context, msg channel.InboundMessage, text 
 	})
 }
 
-func (s *Server) sendResponseToUser(ctx context.Context, userID string, p channel.Presenter, resp *agent.Response) {
-	logger := log.WithFunc("server.sendResponse")
+// sendCommandResponse sends a command response using the original msg.ReplyToken.
+// Unlike sendResponseToUser (which looks up the token from a map), this avoids
+// a race where /close deletes the session before the response is sent.
+func (s *Server) sendCommandResponse(ctx context.Context, msg channel.InboundMessage, p channel.Presenter, resp *agent.Response) {
+	if resp == nil {
+		return
+	}
+	if resp.Text != "" {
+		s.sendText(ctx, msg, p.FormatText(resp.Text))
+	}
+	for _, f := range resp.Files {
+		_ = s.channel.Send(ctx, channel.OutboundMessage{
+			RecipientID: msg.SenderID,
+			FilePath:    f,
+			ReplyToken:  msg.ReplyToken,
+		})
+	}
+}
 
+func (s *Server) sendResponseToUser(ctx context.Context, userID string, p channel.Presenter, resp *agent.Response) {
 	if resp == nil {
 		return
 	}
@@ -343,7 +415,9 @@ func (s *Server) sendResponseToUser(ctx context.Context, userID string, p channe
 			Text:        cleanText,
 			ReplyToken:  token,
 		}); err != nil {
-			logger.Warnf(ctx, "send text to %s: %v", userID, err)
+			if s.handleSendError(ctx, userID, err) {
+				return
+			}
 		}
 	}
 
@@ -353,7 +427,10 @@ func (s *Server) sendResponseToUser(ctx context.Context, userID string, p channe
 			FilePath:    f,
 			ReplyToken:  token,
 		}); err != nil {
-			logger.Warnf(ctx, "send file %s to %s: %v", f, userID, err)
+			if s.handleSendError(ctx, userID, err) {
+				_ = os.Remove(f)
+				return
+			}
 		}
 		_ = os.Remove(f)
 	}

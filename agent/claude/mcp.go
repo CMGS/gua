@@ -85,9 +85,8 @@ func (c *ClaudeCode) handleBridgeSession(conn net.Conn, reader *bufio.Reader, en
 	c.readBridgeLoop(sess)
 	sessCancel()
 
-	// If a Respawn is in progress, the bridge disconnect is expected — don't clean up.
-	if sess.respawning.Get() {
-		logger.Debugf(c.ctx, "bridge disconnected for user=%s (respawning, skipping cleanup)", sess.userID)
+	// Shutdown or respawn — skip cleanup, CloseAll handles it.
+	if c.ctx.Err() != nil || sess.respawning.Get() {
 		return
 	}
 
@@ -193,7 +192,9 @@ func (c *ClaudeCode) readBridgeLoop(sess *userSession) {
 	for {
 		env, err := protocol.ReadEnvelope(sess.reader)
 		if err != nil {
-			logger.Warnf(c.ctx, "bridge read error for user=%s: %v", sess.userID, err)
+			if c.ctx.Err() == nil {
+				logger.Warnf(c.ctx, "bridge read error for user=%s: %v", sess.userID, err)
+			}
 			return
 		}
 

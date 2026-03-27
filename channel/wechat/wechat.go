@@ -144,7 +144,9 @@ func (w *WeChat) Send(ctx context.Context, msg channel.OutboundMessage) error {
 	return nil
 }
 
-// StartTyping shows a typing indicator. Returns a stop function with 5s keepalive.
+func (w *WeChat) ProbeThread(_ context.Context, _ string) error { return nil }
+func (w *WeChat) RenameThread(_ context.Context, _, _ string)   {}
+
 func (w *WeChat) StartTyping(ctx context.Context, userID, replyToken string) (stop func()) {
 	if w.bot == nil {
 		return func() {}

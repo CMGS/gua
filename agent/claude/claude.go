@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -108,8 +109,13 @@ func New(ctx context.Context, opts ...Option) (*ClaudeCode, error) {
 // Name returns the agent identifier.
 func (c *ClaudeCode) Name() string { return "claude" }
 
-// CLICommands returns CC CLI commands that trigger TUI menus via passthrough.
 func (c *ClaudeCode) CLICommands() []string { return ccCLICommands }
+
+func (c *ClaudeCode) ActiveSessions() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return slices.Collect(maps.Keys(c.sessions))
+}
 
 func (c *ClaudeCode) getSession(userID string) (*userSession, bool) {
 	c.mu.RLock()

@@ -29,6 +29,8 @@ type Agent interface {
 	RespawnSession(ctx context.Context, userID, workDir, resumeOpt string) (changed bool, err error)
 	// CLICommands returns the agent's CLI command whitelist (e.g. /model, /fast).
 	CLICommands() []string
+	// ActiveSessions returns all active session IDs (senderIDs).
+	ActiveSessions() []string
 	Close(userID string) error
 	CloseAll() error
 }
