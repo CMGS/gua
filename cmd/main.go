@@ -14,7 +14,6 @@ import (
 const (
 	defaultBackend = "wechat"
 	defaultAgent   = "claude"
-	defaultModel   = "sonnet"
 
 	subcmdList   = "list"
 	subcmdRemove = "remove"

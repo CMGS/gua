@@ -49,8 +49,7 @@ func New(ch channel.Channel, a agent.Agent) *Server {
 
 // Run starts the server. Blocks until ctx is canceled.
 func (s *Server) Run(ctx context.Context) error {
-	logger := log.WithFunc("server.Run")
-	logger.Infof(ctx, "starting server: channel=%s agent=%s", s.channel.Name(), s.agent.Name())
+	log.WithFunc("server.Run").Infof(ctx, "starting server: channel=%s agent=%s", s.channel.Name(), s.agent.Name())
 
 	err := s.channel.Start(ctx, func(ctx context.Context, msg channel.InboundMessage) {
 		s.sem <- struct{}{}
@@ -199,12 +198,13 @@ func (s *Server) cmdRename(ctx context.Context, msg channel.InboundMessage, fiel
 	}
 	name := strings.Join(fields[1:], " ")
 
-	// Rename agent session (CC's /rename command).
+	// Rename agent session (pass through as CLI command).
 	if err := s.agent.RawInput(ctx, msg.SenderID, "/rename "+name); err != nil {
-		return &agent.Response{Text: fmt.Sprintf("rename failed: %v", err)}
+		// Agent may not support RawInput (e.g. codex) — not fatal.
+		log.WithFunc("server.cmdRename").Debugf(ctx, "agent rename: %v", err)
 	}
 
-	// Rename channel thread/topic (Telegram only, no-op for WeChat).
+	// Rename channel thread/topic (no-op if unsupported).
 	s.channel.RenameThread(ctx, msg.ReplyToken, name)
 
 	return &agent.Response{Text: fmt.Sprintf("renamed to %s", name)}
@@ -272,7 +272,6 @@ func (s *Server) ensureResponseLoop(ctx context.Context, userID string, stopTypi
 	presenter := s.channel.Presenter()
 
 	go func() {
-		logger := log.WithFunc("server.responseLoop")
 		defer s.subscribers.Delete(userID)
 		defer s.replyTokens.Delete(userID)
 
@@ -282,9 +281,8 @@ func (s *Server) ensureResponseLoop(ctx context.Context, userID string, stopTypi
 				stopTyping()
 				typingStopped = true
 			}
-			token := s.getReplyToken(userID)
-			if token == "" {
-				logger.Warnf(ctx, "no reply token for user %s, dropping response", userID)
+			if s.getReplyToken(userID) == "" {
+				log.WithFunc("server.responseLoop").Warnf(ctx, "no reply token for user %s, dropping response", userID)
 				continue
 			}
 			s.sendResponseToUser(ctx, userID, presenter, resp)
@@ -300,7 +298,10 @@ func (s *Server) getReplyToken(userID string) string {
 	if !ok {
 		return ""
 	}
-	token, _ := v.(string)
+	token, ok := v.(string)
+	if !ok {
+		return ""
+	}
 	return token
 }
 

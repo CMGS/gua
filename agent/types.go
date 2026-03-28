@@ -9,6 +9,9 @@ import (
 // ErrNoSession is returned when an operation requires an active session but none exists.
 var ErrNoSession = errors.New("no active session")
 
+// ResponseBufSize is the per-user response channel buffer size.
+const ResponseBufSize = 64
+
 // PromptType indicates whether a response requires user interaction.
 type PromptType int
 

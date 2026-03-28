@@ -33,3 +33,4 @@ tmp/
 .cache/
 .tmp/
 .claude/
+.mcp.*

@@ -26,7 +26,7 @@ const (
 	bridgeConnTimeout  = 30 * time.Second
 	promptPollInterval = 2 * time.Second
 	hookTimeoutMS      = 300000 // 5 minutes, written to CC hook settings
-	responseBufSize    = 64     // per-user response channel buffer
+	responseBufSize    = agent.ResponseBufSize
 
 	behaviorAllow = "allow"
 	behaviorDeny  = "deny"

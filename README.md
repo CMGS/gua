@@ -10,13 +10,13 @@ Each user gets their own isolated AI session. No API keys required — use your 
 |---|---|---|---|
 | **Language** | Go | Go | Python |
 | **Channel** | Interface-based (WeChat, Telegram implemented) | WeChat | Telegram |
-| **Agent** | Interface-based (Claude Code implemented) | Claude/Codex/Kimi via ACP, CLI, or HTTP | Claude Code |
+| **Agent** | Interface-based (Claude Code, Codex implemented) | Claude/Codex/Kimi via ACP, CLI, or HTTP | Claude Code |
 | **Runtime** | Interface-based (tmux implemented) | N/A | tmux (hardcoded) |
-| **Communication** | Agent-defined (Claude Code: MCP channel protocol, persistent bidirectional Unix socket) | ACP: JSON-RPC 2.0 over long-running subprocess; CLI: process per message with `--stream-json`; HTTP: API client | tmux `send-keys` for input; JSONL file polling for output (byte-offset incremental read) |
-| **Billing** | Agent-dependent (Claude Code: subscription, no per-message API cost) | ACP/CLI: subscription; HTTP: API token-based | Subscription (local Claude Code CLI) |
+| **Communication** | Agent-defined (Claude Code: MCP channel protocol via Unix socket; Codex: JSON-RPC 2.0 via `codex mcp-server` over FIFO pipes) | ACP: JSON-RPC 2.0 over long-running subprocess; CLI: process per message with `--stream-json`; HTTP: API client | tmux `send-keys` for input; JSONL file polling for output (byte-offset incremental read) |
+| **Billing** | Agent-dependent (Claude Code: Anthropic subscription; Codex: OpenAI/ChatGPT subscription) | ACP/CLI: subscription; HTTP: API token-based | Subscription (local Claude Code CLI) |
 | **Multi-user** | Multi-tenant — one server serves many users with isolated sessions | Single instance per account; multiple instances for multiple users | Multi-user — one Telegram bot serves many users via topic-to-window mapping |
-| **Permission handling** | Agent-defined (Claude Code: hooks intercept before terminal; routed to user for approval) | ACP: auto-allow all; CLI: system prompt injection | Terminal regex detection; inline keyboard buttons |
-| **TUI menu** | Agent-defined (Claude Code: `capture-pane` boundary detection; `/select N` navigation) | Not handled | Full TUI: regex `UIPattern` top/bottom delimiters; inline keyboard |
+| **Permission handling** | Agent-defined (Claude Code: hooks intercept before terminal; Codex: MCP elicitation/create requests; both routed to user for approval) | ACP: auto-allow all; CLI: system prompt injection | Terminal regex detection; inline keyboard buttons |
+| **TUI menu** | Agent-defined (Claude Code: `capture-pane` boundary detection, `/select N` navigation; Codex: no TUI) | Not handled | Full TUI: regex `UIPattern` top/bottom delimiters; inline keyboard |
 | **Media** | Channel-defined (WeChat: images, voice, video, files; Telegram: photos, documents, voice, video) | Text only | Text, voice, screenshots |
 | **Sharing** | `/share` generates QR/invite via Channel interface | Manual | Manual |
 | **Management** | CLI: `accounts` (bot accounts), `sessions` (user sessions) | None | None |
@@ -27,7 +27,7 @@ Each user gets their own isolated AI session. No API keys required — use your 
 ```
 Channel (messaging)     Agent (AI backend)      Runtime (process container)
   ├── WeChat ✓            ├── Claude Code ✓        ├── tmux ✓
-  ├── Telegram ✓          ├── Codex                ├── screen
+  ├── Telegram ✓          ├── Codex ✓              ├── screen
   └── Discord             └── Gemini               └── container
 
                     ↕                ↕
@@ -37,7 +37,7 @@ Channel (messaging)     Agent (AI backend)      Runtime (process container)
 
 All three dimensions are **fully decoupled via Go interfaces**. Adding a new channel, agent, or runtime requires zero changes to existing code.
 
-- **New Agent** (e.g., Codex): implement `Agent` interface — different agents may use different communication methods (MCP, JSONL polling, API calls)
+- **New Agent** (e.g., Gemini): implement `Agent` interface — different agents may use different communication methods (MCP, JSONL polling, API calls)
 - **New Channel** (e.g., Discord): implement `Channel` + `Presenter` — different channels may offer inline keyboards, buttons, or text-only interaction
 - **New Runtime** (e.g., containers): implement `Runtime` — different runtimes may use Docker, screen, or direct process management
 
@@ -45,8 +45,10 @@ All three dimensions are **fully decoupled via Go interfaces**. Adding a new cha
 
 ### Prerequisites
 
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - tmux
+- At least one AI agent CLI installed and authenticated:
+  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) for Claude agent
+  - [Codex CLI](https://github.com/openai/codex) for Codex agent
 
 ### Install (Linux & macOS)
 
@@ -103,20 +105,34 @@ sudo systemctl enable gua  # auto-start on boot
 launchctl load ~/Library/LaunchAgents/com.gua.server.plist
 launchctl start com.gua.server
 
-# Or run directly:
+# Or run directly (Claude Code + WeChat):
 gua-server start \
   --backend wechat \
+  --agent claude \
   --work-dir ~/.gua/workspace \
   --bridge-bin $(which gua-bridge) \
   --model sonnet \
   --prompt ./my-custom-rules.md  # optional: appended to init prompt
 
-# Telegram:
+# Claude Code + Telegram:
 gua-server start \
   --backend telegram \
+  --agent claude \
   --work-dir ~/.gua/workspace \
   --bridge-bin $(which gua-bridge) \
   --model sonnet
+
+# Codex + WeChat:
+gua-server start \
+  --backend wechat \
+  --agent codex \
+  --work-dir ~/.gua/workspace
+
+# Codex + Telegram:
+gua-server start \
+  --backend telegram \
+  --agent codex \
+  --work-dir ~/.gua/workspace
 ```
 
 ### Account Management
@@ -140,43 +156,61 @@ gua-server start \
 ./bin/gua-server sessions remove <user-id> --work-dir /path/to/workspace
 ```
 
+### Agent Comparison
+
+| Feature | Claude Code | Codex |
+|---|---|---|
+| **Subscription** | Anthropic (Claude Max) | OpenAI (ChatGPT Plus) |
+| **Communication** | MCP channel protocol via Unix socket bridge | JSON-RPC 2.0 via `codex mcp-server` over FIFO pipes |
+| **Permission handling** | Hook-based (`PermissionRequest` / `Elicitation`) | MCP `elicitation/create` requests |
+| **Yolo mode** (`/whosyourdaddy`) | `--dangerously-skip-permissions` flag | `approval-policy: "never"` |
+| **TUI menu** | `capture-pane` boundary detection + `/select N` | Not supported (no TUI) |
+| **CLI passthrough** (`/model`, `/fast`) | Forwarded to terminal via `RawInput` | Not supported (sent as regular messages) |
+| **Session resume** (`--continue`, `--resume`) | Supported | Not supported (threadId-based) |
+| **Tmux observability** | Full terminal visible (interactive TUI) | JSON-RPC traffic mirrored via `tee /dev/stderr` |
+| **Required flags** | `--bridge-bin` | None |
+| **Init prompt file** | `CLAUDE.md` | `CODEX.md` |
+
+### Channel Comparison
+
+| Feature | WeChat | Telegram |
+|---|---|---|
+| **Markdown** | Not supported (plain text only) | Supported |
+| **Media types** | Image, voice, video, file | Photo, document, voice, video |
+| **Permission UX** | Text commands (`/yes`, `/no`) | Inline keyboard buttons + text fallback |
+| **TUI menu UX** | Text commands (`/select N`) | Inline keyboard buttons + text fallback |
+| **Voice shortcuts** | 是/好/可以 = `/yes`, 不/不要/取消 = `/no` | Not supported |
+| **Session model** | Per-user (single session per WeChat user) | Per-topic (forum topics, each topic = isolated session) |
+| **Sharing** | `/share` → QR code image | Not supported |
+| **Thread cleanup** | Not needed | `/clean` removes orphaned sessions from deleted topics |
+| **Multi-account** | Multiple bot accounts with hot-reload (fsnotify) | Single bot token |
+
 ### In-Chat Commands
 
-**Global** (handled by server, all channels):
+**Global** (handled by server, works with all agents and channels):
 
 | Command | Effect |
 |---|---|
-| `/whosyourdaddy` | Activate yolo mode (`--dangerously-skip-permissions`) |
-| `/imyourdaddy` | Restore safe mode |
-| `/share` | Send the bot's QR code / invite link for sharing with other users |
-| `/close` | Close current session (next message starts a fresh session) |
+| `/whosyourdaddy` | Activate yolo mode (skip permission prompts) |
+| `/imyourdaddy` | Restore safe mode (require permission approval) |
+| `/share` | Send the bot's QR code / invite link |
+| `/close` | Close current session (next message starts fresh) |
 | `/clean` | Clean up stale sessions from deleted threads/topics |
-| `/rename <name>` | Rename session (and topic on Telegram) |
-| `/respawn <dir>` | Switch session to a different working directory (fresh) |
-| `/respawn <dir> --continue` | Same, resume most recent conversation |
-| `/respawn <dir> --resume <id>` | Same, resume a specific session by ID |
+| `/rename <name>` | Rename session (and Telegram topic) |
+| `/respawn <dir>` | Switch to a different working directory |
+| `/respawn <dir> --continue` | Same, resume most recent conversation (Claude Code only) |
+| `/respawn <dir> --resume <id>` | Same, resume specific session (Claude Code only) |
 
-**Agent CLI passthrough** (Claude Code specific, forwarded to terminal):
+**Channel control** (parsed by Presenter):
 
-| Command | Effect |
-|---|---|
-| `/model` | Switch model (TUI menu) |
-| `/fast` | Toggle fast mode (TUI menu) |
-
-**Channel control** (parsed by Presenter, channel-specific UX):
-
-| Command | WeChat | Telegram | Effect |
+| Input | WeChat | Telegram | Effect |
 |---|---|---|---|
-| `/yes` | Text | Text | Confirm / allow / enter |
-| `/no` | Text | Text | Deny / reject |
-| `/cancel` | Text | Text | Cancel / exit menu |
+| `/yes` `/y` `/ok` | Text | Text | Confirm / approve |
+| `/no` `/n` `/cancel` | Text | Text | Deny / reject |
 | `/select N` | Text | Text | Select option N |
-| ✅ Allow / ❌ Deny | — | Inline keyboard | Permission approval |
-| Option buttons | — | Inline keyboard | TUI menu selection |
+| Inline buttons | — | Keyboard | Permission / menu selection |
 | 是 / 好 / 可以 | Voice-friendly | — | Same as `/yes` |
 | 不 / 不要 / 取消 | Voice-friendly | — | Same as `/no` |
-
-Telegram uses inline keyboard buttons for permissions and TUI menus; text commands work as fallback. WeChat uses text-only commands with Chinese voice shortcuts.
 
 ## Project Structure
 
@@ -189,10 +223,11 @@ gua/
 ├── runtime/            Process container interface
 │   └── tmux/           tmux implementation
 ├── agent/              Agent interface
-│   └── claude/         Claude Code implementation
-│       ├── protocol/   Bridge socket protocol (envelope types)
-│       ├── mcpserver/  Lightweight MCP JSON-RPC server
-│       └── bridge/     Bridge binary (MCP server inside Claude Code)
+│   ├── claude/         Claude Code implementation
+│   │   ├── protocol/   Bridge socket protocol (envelope types)
+│   │   ├── mcpserver/  Lightweight MCP JSON-RPC server
+│   │   └── bridge/     Bridge binary (MCP server inside Claude Code)
+│   └── codex/          Codex implementation (JSON-RPC over FIFO pipes)
 ├── channel/            Channel + Presenter interfaces
 │   ├── wechat/         WeChat implementation
 │   └── telegram/       Telegram implementation
@@ -215,16 +250,13 @@ gua/
 
 **Telegram Forum Topics**: Each Telegram topic maps to an isolated session. Users create topics via Telegram's native UI; each topic gets its own tmux window and Claude Code instance. `/close` kills the session; deleting a topic leaves the session orphaned until `/clean` is run. Stale callbacks from old inline keyboards are silently dropped via the `ActionOnly` flag.
 
-**Four-layer Prompt**: Init prompt = `config/base.md` (security rules) + agent prompt (agent-specific behavior) + channel prompt (channel-specific rules) + `presenter.MediaInstructions()` (media handling) + optional user prompt (`--prompt` flag). Each layer is independently managed; user prompt has highest priority (appended last).
+**Four-layer Prompt**: Init prompt = `config/base.md` (security rules) + agent prompt (agent-specific behavior) + channel prompt (channel-specific rules) + `presenter.MediaInstructions()` (media handling) + optional user prompt (`--prompt` flag). Each layer is independently managed; user prompt has highest priority (appended last). The assembled prompt is written to the session workdir as `CLAUDE.md` or `CODEX.md` depending on the agent — each agent only reads its own instruction file.
 
-### Claude Code Implementation Details
+### Implementation Notes
 
-The Claude Code agent uses these specific mechanisms (other agents may differ):
+**Claude Code**: Uses a custom bridge binary (`gua-bridge`) that runs as an MCP server inside Claude Code. The bridge connects back to gua via a persistent Unix socket, enabling bidirectional communication. Permission prompts are intercepted by hooks before reaching the terminal. TUI menus (e.g., `/model`) are captured via `capture-pane` boundary detection and rendered as channel-specific controls.
 
-- **MCP Channel Protocol**: Persistent bidirectional communication via Unix socket bridge
-- **Hook-based Permissions**: `PermissionRequest` and `Elicitation` hooks intercept prompts before terminal display
-- **TUI Menu Capture**: `capture-pane` with separator + `Esc to` boundary detection for CLI command menus
-- **Watch**: FIFO-based `pipe-pane` keeps the terminal output stream alive (interactive detection uses `capture-pane` instead)
+**Codex**: Runs `codex mcp-server` as a long-lived subprocess with stdin/stdout redirected through FIFO named pipes. First message creates a new thread via the `codex` MCP tool; subsequent messages continue via `codex-reply` with `threadId`. Permission prompts arrive as `elicitation/create` server-initiated JSON-RPC requests. No bridge binary needed — communication is direct over FIFOs.
 
 ## Acknowledgments
 

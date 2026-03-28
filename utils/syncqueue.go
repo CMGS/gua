@@ -21,8 +21,7 @@ func (q *SyncQueue[T]) Peek() (T, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.items) == 0 {
-		var zero T
-		return zero, false
+		return *new(T), false
 	}
 	return q.items[0], true
 }
@@ -33,12 +32,10 @@ func (q *SyncQueue[T]) Pop() (T, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.items) == 0 {
-		var zero T
-		return zero, false
+		return *new(T), false
 	}
 	front := q.items[0]
-	var zero T
-	q.items[0] = zero // zero slot for GC
+	clear(q.items[:1]) // zero slot for GC
 	q.items = q.items[1:]
 	return front, true
 }
@@ -50,8 +47,7 @@ func (q *SyncQueue[T]) Remove(match func(T) bool) bool {
 	defer q.mu.Unlock()
 	for i, item := range q.items {
 		if match(item) {
-			var zero T
-			q.items[i] = zero
+			clear(q.items[i : i+1])
 			q.items = append(q.items[:i], q.items[i+1:]...)
 			return true
 		}

@@ -14,7 +14,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/projecteru2/core/log"
 
+	agentpkg "github.com/CMGS/gua/agent"
 	"github.com/CMGS/gua/agent/claude"
+	"github.com/CMGS/gua/agent/codex"
 	"github.com/CMGS/gua/channel"
 	tg "github.com/CMGS/gua/channel/telegram"
 	"github.com/CMGS/gua/channel/wechat"
@@ -26,16 +28,28 @@ import (
 	"github.com/CMGS/gua/utils"
 )
 
+// agentConfig holds parsed CLI flags needed to create any agent.
+type agentConfig struct {
+	name      string
+	model     string
+	workDir   string
+	claudeCmd string
+	codexCmd  string
+	bridgeBin string
+	tmuxName  string
+}
+
 func cmdStart(ctx context.Context, args []string) int {
 	logger := log.WithFunc("cmd.start")
 
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	backendName := fs.String("backend", defaultBackend, "backend name")
-	agentName := fs.String("agent", defaultAgent, "agent name")
+	agentName := fs.String("agent", defaultAgent, "agent name (claude, codex)")
 	workDir := fs.String("work-dir", "", "working directory for agent sessions (required)")
-	model := fs.String("model", defaultModel, "model name")
+	model := fs.String("model", "", "model name (default: sonnet for claude, gpt default for codex)")
 	claudeCmd := fs.String("claude-cmd", "claude", "path to claude CLI binary")
-	bridgeBin := fs.String("bridge-bin", "", "path to bridge binary (required)")
+	codexCmd := fs.String("codex-cmd", "codex", "path to codex CLI binary")
+	bridgeBin := fs.String("bridge-bin", "", "path to bridge binary (required for claude)")
 	tmuxName := fs.String("tmux-name", "gua", "tmux session name for runtime")
 	promptFile := fs.String("prompt", "", "path to a custom .md file appended to the init prompt")
 	_ = fs.Parse(args)
@@ -47,8 +61,15 @@ func cmdStart(ctx context.Context, args []string) int {
 		logger.Errorf(ctx, nil, "--work-dir is required")
 		return 1
 	}
-	if *bridgeBin == "" {
-		logger.Errorf(ctx, nil, "--bridge-bin is required")
+	if *agentName == defaultAgent && *bridgeBin == "" {
+		logger.Errorf(ctx, nil, "--bridge-bin is required for claude agent")
+		return 1
+	}
+
+	switch *agentName {
+	case "claude", "codex":
+	default:
+		logger.Errorf(ctx, fmt.Errorf("unknown agent: %s", *agentName), "supported: claude, codex")
 		return 1
 	}
 
@@ -62,37 +83,63 @@ func cmdStart(ctx context.Context, args []string) int {
 		userPrompt = string(data)
 	}
 
-	agentOpts := []claude.Option{
-		claude.WithRuntime(runtmux.New(*tmuxName)),
-		claude.WithClaudeCmd(*claudeCmd),
-		claude.WithBridgeBin(*bridgeBin),
-		claude.WithModel(*model),
-		claude.WithWorkDir(*workDir),
-	}
-
-	if *agentName != "claude" {
-		logger.Errorf(ctx, fmt.Errorf("unknown agent: %s", *agentName), "only 'claude' is supported")
-		return 1
+	ac := &agentConfig{
+		name:      *agentName,
+		model:     *model,
+		workDir:   *workDir,
+		claudeCmd: *claudeCmd,
+		codexCmd:  *codexCmd,
+		bridgeBin: *bridgeBin,
+		tmuxName:  *tmuxName,
 	}
 
 	switch *backendName {
 	case "telegram":
-		return startTelegram(ctx, userPrompt, agentOpts...)
+		return startTelegram(ctx, ac, userPrompt)
 	default:
-		return startWechat(ctx, *backendName, *agentName, userPrompt, agentOpts...)
+		return startWechat(ctx, *backendName, ac, userPrompt)
 	}
 }
 
 // buildInitPrompt assembles the agent init prompt from base + agent + channel parts.
-func buildInitPrompt(channelPrompt string, ch channel.Channel, userPrompt string) string {
-	initPrompt := config.BaseMD + "\n\n" + claude.PromptMD + "\n\n" + channelPrompt + "\n\n" + ch.Presenter().MediaInstructions()
+func buildInitPrompt(agentPrompt, channelPrompt string, ch channel.Channel, userPrompt string) string {
+	initPrompt := config.BaseMD + "\n\n" + agentPrompt + "\n\n" + channelPrompt + "\n\n" + ch.Presenter().MediaInstructions()
 	if userPrompt != "" {
 		initPrompt += "\n\n" + userPrompt
 	}
 	return initPrompt
 }
 
-func startTelegram(ctx context.Context, userPrompt string, opts ...claude.Option) int {
+// createAgent creates an agent based on the config.
+func createAgent(ctx context.Context, ac *agentConfig, ch channel.Channel, channelPrompt, userPrompt string) (agentpkg.Agent, error) {
+	rt := runtmux.New(ac.tmuxName)
+
+	switch ac.name {
+	case "claude":
+		agentMD := buildInitPrompt(claude.PromptMD, channelPrompt, ch, userPrompt)
+		return claude.New(ctx,
+			claude.WithRuntime(rt),
+			claude.WithClaudeCmd(ac.claudeCmd),
+			claude.WithBridgeBin(ac.bridgeBin),
+			claude.WithModel(ac.model),
+			claude.WithWorkDir(ac.workDir),
+			claude.WithClaudeMD(agentMD),
+		)
+	case "codex":
+		agentMD := buildInitPrompt(codex.PromptMD, channelPrompt, ch, userPrompt)
+		return codex.New(ctx,
+			codex.WithRuntime(rt),
+			codex.WithCodexCmd(ac.codexCmd),
+			codex.WithModel(ac.model),
+			codex.WithWorkDir(ac.workDir),
+			codex.WithInitPrompt(agentMD),
+		)
+	default:
+		return nil, fmt.Errorf("unknown agent: %s", ac.name)
+	}
+}
+
+func startTelegram(ctx context.Context, ac *agentConfig, userPrompt string) int {
 	logger := log.WithFunc("cmd.startTelegram")
 
 	type tokenCreds struct {
@@ -111,23 +158,21 @@ func startTelegram(ctx context.Context, userPrompt string, opts ...claude.Option
 	}
 
 	b := tg.New(creds.Token)
-	opts = append(opts, claude.WithClaudeMD(buildInitPrompt(tg.PromptMD, b, userPrompt)))
-
-	a, err := claude.New(ctx, opts...)
+	a, err := createAgent(ctx, ac, b, tg.PromptMD, userPrompt)
 	if err != nil {
 		logger.Errorf(ctx, err, "create agent")
 		return 1
 	}
 
 	srv := server.New(b, a)
-	logger.Info(ctx, "telegram bot running")
+	logger.Infof(ctx, "telegram bot running: agent=%s", ac.name)
 	if err := srv.Run(ctx); err != nil {
 		logger.Warnf(ctx, "server exited: %v", err)
 	}
 	return 0
 }
 
-func startWechat(ctx context.Context, backendName, agentName, userPrompt string, opts ...claude.Option) int {
+func startWechat(ctx context.Context, backendName string, ac *agentConfig, userPrompt string) int {
 	logger := log.WithFunc("cmd.startWechat")
 
 	dir := accountsDir(backendName)
@@ -148,18 +193,18 @@ func startWechat(ctx context.Context, backendName, agentName, userPrompt string,
 		wg.Add(1)
 		go func(creds *types.Credentials) {
 			defer wg.Done()
-			logger.Infof(ctx, "starting account %s: backend=%s agent=%s", creds.ILinkBotID, backendName, agentName)
-			runAccount(ctx, creds, backendName, agentName, dir, userPrompt, opts...)
+			logger.Infof(ctx, "starting account %s: backend=%s agent=%s", creds.ILinkBotID, backendName, ac.name)
+			runAccount(ctx, creds, backendName, ac, dir, userPrompt)
 		}(creds)
 	}
 
-	go watchNewAccounts(ctx, dir, known, backendName, agentName, userPrompt, opts...)
+	go watchNewAccounts(ctx, dir, known, backendName, ac, userPrompt)
 
 	wg.Wait()
 	return 0
 }
 
-func runAccount(ctx context.Context, creds *types.Credentials, backendName, agentName, acctDir, userPrompt string, opts ...claude.Option) {
+func runAccount(ctx context.Context, creds *types.Credentials, backendName string, ac *agentConfig, acctDir, userPrompt string) {
 	logger := log.WithFunc("cmd.runAccount")
 	botID := creds.ILinkBotID
 
@@ -172,27 +217,20 @@ func runAccount(ctx context.Context, creds *types.Credentials, backendName, agen
 		return
 	}
 
-	opts = append(opts, claude.WithClaudeMD(buildInitPrompt(wechat.PromptMD, b, userPrompt)))
+	a, err := createAgent(ctx, ac, b, wechat.PromptMD, userPrompt)
+	if err != nil {
+		logger.Errorf(ctx, err, "create agent for account %s", botID)
+		return
+	}
 
-	switch agentName {
-	case "claude":
-		a, err := claude.New(ctx, opts...)
-		if err != nil {
-			logger.Errorf(ctx, err, "create agent for account %s", botID)
-			return
-		}
-
-		srv := server.New(b, a)
-		logger.Infof(ctx, "account %s running: backend=%s agent=%s", botID, backendName, agentName)
-		if err := srv.Run(ctx); err != nil {
-			logger.Warnf(ctx, "account %s server exited: %v", botID, err)
-		}
-	default:
-		logger.Errorf(ctx, fmt.Errorf("unknown agent: %s", agentName), "account %s", botID)
+	srv := server.New(b, a)
+	logger.Infof(ctx, "account %s running: backend=%s agent=%s", botID, backendName, ac.name)
+	if err := srv.Run(ctx); err != nil {
+		logger.Warnf(ctx, "account %s server exited: %v", botID, err)
 	}
 }
 
-func watchNewAccounts(ctx context.Context, dir string, known map[string]bool, backendName, agentName, userPrompt string, opts ...claude.Option) {
+func watchNewAccounts(ctx context.Context, dir string, known map[string]bool, backendName string, ac *agentConfig, userPrompt string) {
 	logger := log.WithFunc("cmd.watchNewAccounts")
 
 	watcher, err := fsnotify.NewWatcher()
@@ -226,7 +264,7 @@ func watchNewAccounts(ctx context.Context, dir string, known map[string]bool, ba
 			}
 			known[creds.ILinkBotID] = true
 			logger.Infof(ctx, "new account detected: %s", creds.ILinkBotID)
-			go runAccount(ctx, creds, backendName, agentName, dir, userPrompt, opts...)
+			go runAccount(ctx, creds, backendName, ac, dir, userPrompt)
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return

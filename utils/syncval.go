@@ -26,6 +26,5 @@ func (v *SyncValue[T]) Set(val T) {
 func (v *SyncValue[T]) Clear() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	var zero T
-	v.val = zero
+	v.val = *new(T)
 }
